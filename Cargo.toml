@@ -7,6 +7,10 @@ description = "The KMB/KMP protocol of PQplus and KMB power quality meters"
 license = "Apache-2.0"
 repository = "https://github.com/Project-Stateful-Zenith/zenith-kmb"
 authors = ["Project-Stateful-Zenith Contributors"]
+readme = "README.md"
+homepage = "https://github.com/Project-Stateful-Zenith/zenith-kmb"
+keywords = ["power-quality", "metering", "protocol", "sans-io", "umd-98"]
+categories = ["network-programming", "parser-implementations", "hardware-support"]
 
 [lints]
 workspace = true

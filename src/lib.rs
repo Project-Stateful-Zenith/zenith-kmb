@@ -1,3 +1,4 @@
+#![doc = include_str!("../docs/kmb.md")]
 #![forbid(unsafe_code)]
 
 pub mod archive;
