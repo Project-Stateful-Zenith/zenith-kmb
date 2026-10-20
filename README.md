@@ -13,6 +13,11 @@ an always-on collector service built on it.
 | `kmb` | the protocol core: frames, checksums, login, encryption, commands, and decoders for identify, clock, configuration and archive records |
 | `kmb-tokio` | an async client on Tokio that sends the commands and reassembles the replies; feature `tls` adds KMB over TLS |
 
+> [!NOTE]
+> This repository is a clone of an internal production repository. It may
+> lag behind the internal one in releases and patches, though we try to
+> patch issues here that we catch internally.
+
 ## How it is built
 
 `kmb` is **sans-IO**. It opens no sockets, reads no clock and has no
