@@ -95,6 +95,22 @@ fn issuer_name() {
 }
 
 #[test]
+fn issuer_malformed() {
+    // the walker must reject or return a slice, never panic, on any truncation or bit flip
+    let der = chain().intermediate.to_vec();
+    for len in 0..der.len() {
+        let _ = tls::issuer(&der[..len]);
+    }
+    for i in 0..der.len() {
+        for bit in 0..8 {
+            let mut bad = der.clone();
+            bad[i] ^= 1 << bit;
+            let _ = tls::issuer(&bad);
+        }
+    }
+}
+
+#[test]
 fn spki() {
     let spki = tls::p256_spki(&[0x11; 32], &[0x22; 32]);
     assert_eq!(spki.len(), 25 + 64);

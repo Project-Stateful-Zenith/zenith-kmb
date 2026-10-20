@@ -18,8 +18,8 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 
 pub const PORT: u16 = 2101;
 pub const TLS_PORT: u16 = 7101;
-pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
-pub const BYTE_TIMEOUT: Duration = Duration::from_millis(10_000);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const BYTE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SETTLE: Duration = Duration::from_millis(300);
 pub const PAGE_ATTEMPTS: usize = 4;
 pub const BATCH_FOLLOW_UPS: usize = 9;

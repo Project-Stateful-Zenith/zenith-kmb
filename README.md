@@ -41,7 +41,9 @@ What the protocol covers:
   across TCP reads.
 - **Access**: the PIN login meters with a user and password expect, and
   the encrypted envelope (AES-128-CBC with HMAC-SHA256, keyed by a per-meter
-  PSK) of meters that require it.
+  PSK) of meters that require it. The PIN is the vendor's MD5-derived
+  32-bit value and is weak on its own; the envelope or TLS is what protects
+  the link.
 - **Universal configuration**: meters describe their own data. The client
   reads those descriptions first and decodes configuration, status, live
   values and archive records from them, so new fields need no code change.
