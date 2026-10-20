@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300" role="img" aria-label="Zenith KMB mark">
+<title>Zenith KMB mark</title>
+<g transform="translate(0 0) scale(1)">
+<circle cx="150" cy="150" r="138" fill="none" stroke="#0a0a0b" stroke-width="3" opacity="0.35"/>
+<path d="M150 22 L157 48 L183 55 L157 62 L150 88 L143 62 L117 55 L143 48 Z" fill="#0a0a0b"/>
+<path d="M62 232 L150 106 L238 232" fill="none" stroke="#0a0a0b" stroke-width="14" stroke-linejoin="miter" stroke-linecap="square"/>
+<path d="M96 232 L150 154 L204 232" fill="none" stroke="#0a0a0b" stroke-width="14" stroke-linejoin="miter" stroke-linecap="square" opacity="0.7"/>
+<path d="M128 232 L150 200 L172 232" fill="none" stroke="#0a0a0b" stroke-width="14" stroke-linejoin="miter" stroke-linecap="square" opacity="0.4"/>
+<path d="M85 257 q13 -18 26 0 t26 0 t26 0 t26 0 t26 0" fill="none" stroke="#0284c7" stroke-width="7" stroke-linecap="square"/>
+</g>
+</svg>

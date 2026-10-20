@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/banner-light.svg">
+    <img alt="Zenith KMB" src=".github/assets/banner-dark.svg" width="100%">
+  </picture>
+</p>
+
 # zenith-kmb
 
 A Rust library for talking to PQplus and KMB power quality meters (UMD-98
