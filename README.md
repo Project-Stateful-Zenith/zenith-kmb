@@ -8,7 +8,7 @@
 
 # zenith-kmb
 
-A Rust library for talking to PQplus and KMB power quality meters (UMD-98
+A Rust library for talking to **PQplus and KMB power quality meters** (UMD-98
 and the SMP family) over their native KMB/KMP protocol: identify a meter,
 read and set its clock, read its configuration and live values, and
 download its archives (measurements, energy, events, power quality).
