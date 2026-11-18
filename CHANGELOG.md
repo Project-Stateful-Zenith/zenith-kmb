@@ -32,6 +32,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
   refused (#8). `tls::subject` and `tls::common_name` read a certificate's
   subject.
 
+### Examples
+
+- Security: `probe` takes the password and PSK from `KMB_PASSWORD` /
+  `KMB_PSK` or from `--password-file` / `--psk-file`; `--password` and
+  `--psk` are refused, so secrets stay out of process lists and shell
+  history (#9).
+- Security: `probe` prints the names and units the meter sends with control
+  characters escaped, so a meter cannot drive the terminal (#10).
+
 ### Dependencies
 
 - Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and

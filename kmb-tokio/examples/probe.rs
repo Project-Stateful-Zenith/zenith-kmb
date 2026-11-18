@@ -26,23 +26,62 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
         tls_root: None,
     };
     let mut user = None;
-    let mut password = None;
+    let mut password = std::env::var(PASSWORD_VAR).ok();
+    let mut psk = std::env::var(PSK_VAR).ok();
     while let Some(flag) = it.next() {
         let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--address" => args.address = value.parse()?,
             "--records" => args.records = value.parse()?,
             "--user" => user = Some(value),
-            "--password" => password = Some(value),
-            "--psk" => args.psk = Some(Psk::from_base64(&value)?),
+            "--password-file" => password = Some(secret_file(&value)?),
+            "--psk-file" => psk = Some(secret_file(&value)?),
             "--tls-root" => args.tls_root = Some(value),
+            "--password" | "--psk" => {
+                return Err(format!(
+                    "{flag} would put a secret on the command line; use {flag}-file or {}",
+                    if flag == "--psk" {
+                        PSK_VAR
+                    } else {
+                        PASSWORD_VAR
+                    }
+                )
+                .into());
+            }
             _ => return Err(format!("unknown option {flag}").into()),
         }
     }
-    if let (Some(u), Some(p)) = (user, password) {
-        args.user = Some((u, p));
+    if let Some(text) = psk {
+        args.psk = Some(Psk::from_base64(&text)?);
+    }
+    match (user, password) {
+        (Some(u), Some(p)) => args.user = Some((u, p)),
+        (Some(_), None) => {
+            return Err(format!("--user needs {PASSWORD_VAR} or --password-file").into());
+        }
+        _ => {}
     }
     Ok(args)
+}
+
+const PASSWORD_VAR: &str = "KMB_PASSWORD";
+const PSK_VAR: &str = "KMB_PSK";
+
+fn secret_file(path: &str) -> Result<String, Box<dyn Error>> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(text.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+fn shown(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn time(t: KmbTime) -> String {
@@ -133,7 +172,7 @@ fn show_description(label: &str, d: &Description) {
     );
     for g in &d.groups {
         let n = d.fields.iter().filter(|f| f.ic == g.idx).count();
-        println!("  group {:3} {:<20} {n} fields", g.idx, g.name);
+        println!("  group {:3} {:<20} {n} fields", g.idx, shown(&g.name));
     }
 }
 
@@ -242,7 +281,11 @@ where
             .count();
         print!(
             "  archive {:<16} idx {:3} typ {:3} k {} unit {:?}: {stored} stored fields",
-            g.name, g.idx, g.typ, g.k, g.unit
+            shown(&g.name),
+            g.idx,
+            g.typ,
+            g.k,
+            g.unit
         );
         let Some(archive) = archive else {
             println!(", no archive type");
@@ -309,8 +352,16 @@ fn show_record(layout: &Layout, columns: &[uni::Column], version: u32, r: &kmb_t
     for ((_, v), col) in fields.iter().zip(columns).skip(header).take(6) {
         let stat = col.stat.map_or("", |s| s.as_str());
         match col.scaled(v) {
-            Some(x) => println!("      {} {stat} = {x} {}", col.name, col.unit),
-            None => println!("      {} {stat} = {v:?} {}", col.name, col.unit),
+            Some(x) => println!(
+                "      {} {stat} = {x} {}",
+                shown(&col.name),
+                shown(&col.unit)
+            ),
+            None => println!(
+                "      {} {stat} = {v:?} {}",
+                shown(&col.name),
+                shown(&col.unit)
+            ),
         }
     }
 }
