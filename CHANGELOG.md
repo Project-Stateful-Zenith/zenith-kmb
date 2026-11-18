@@ -6,6 +6,19 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### `kmb`
+
+- `envelope::random` reads the random of an envelope frame.
+
+### `kmb-tokio`
+
+- Security: once the envelope is in use, a cleartext reply other than an
+  error is refused instead of being returned unauthenticated (#2).
+- Security: `Client::set_require_encryption` makes a meter that answers in
+  cleartext an error before any frame carrying the PIN is sent (#5).
+- Security: a reply must answer the command that was sent, and an envelope
+  whose random was already seen in the session is refused (#7).
+
 ### Dependencies
 
 - Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and
