@@ -4,6 +4,21 @@ All notable changes to `kmb` and `kmb-tokio`. Both crates share one
 version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### `kmb`
+
+- `envelope::random` reads the random of an envelope frame.
+
+### `kmb-tokio`
+
+- Security: once the envelope is in use, a cleartext reply other than an
+  error is refused instead of being returned unauthenticated (#2).
+- Security: `Client::set_require_encryption` makes a meter that answers in
+  cleartext an error before any frame carrying the PIN is sent (#5).
+- Security: a reply must answer the command that was sent, and an envelope
+  whose random was already seen in the session is refused (#7).
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
