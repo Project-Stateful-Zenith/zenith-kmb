@@ -126,6 +126,8 @@ pub struct Client<S> {
     uid: Option<String>,
     keys: Option<KeyLookup>,
     one_frame_archives: bool,
+    secure_transport: bool,
+    refuse_cleartext_pin: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -141,6 +143,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             uid: None,
             keys: None,
             one_frame_archives: false,
+            secure_transport: false,
+            refuse_cleartext_pin: false,
         }
     }
 
@@ -154,6 +158,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub fn set_keys(&mut self, keys: KeyLookup) {
         self.keys = Some(keys);
+    }
+
+    pub const fn set_secure_transport(&mut self, on: bool) {
+        self.secure_transport = on;
+    }
+
+    pub const fn set_refuse_cleartext_pin(&mut self, on: bool) {
+        self.refuse_cleartext_pin = on;
     }
 
     pub const fn set_one_frame_archives(&mut self, on: bool) {
@@ -174,6 +186,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.identify
             .as_ref()
             .map_or(0, |id| pin::wire_pin(self.user_hash, id.device_no))
+    }
+
+    fn login_pin(&self) -> Result<u32> {
+        if self.refuse_cleartext_pin
+            && self.user_hash != 0
+            && self.psk.is_none()
+            && !self.secure_transport
+        {
+            return Err(Error::Precondition(
+                "the PIN would be sent in cleartext; use the envelope or TLS",
+            ));
+        }
+        Ok(self.pin())
     }
 
     pub fn into_inner(self) -> S {
@@ -320,19 +345,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.read_clock().await?;
         let half_ms = started.elapsed().as_millis() / 2;
         let time = now().add_ms(u64::try_from(half_ms).unwrap_or(u64::MAX));
-        self.set(&command::adjust_time_universal(
-            self.address,
-            self.pin(),
-            time,
-        ))
-        .await?;
+        let pin = self.login_pin()?;
+        self.set(&command::adjust_time_universal(self.address, pin, time))
+            .await?;
         Ok(time)
     }
 
     async fn uni_page(&mut self, set: DataSet, rezim: u8, start: u16) -> Result<Vec<u8>> {
         let frame = uni::get(
             self.address,
-            self.pin(),
+            self.login_pin()?,
             set,
             rezim,
             start,
@@ -386,10 +408,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         d: &Description,
         changed_groups: &[u8],
     ) -> Result<()> {
-        for chunk in d.write_chunks(self.address, self.pin(), set)? {
+        let pin = self.login_pin()?;
+        for chunk in d.write_chunks(self.address, pin, set)? {
             self.set(&chunk).await?;
         }
-        self.set(&uni::commit(self.address, self.pin(), changed_groups))
+        self.set(&uni::commit(self.address, pin, changed_groups))
             .await
     }
 
@@ -399,11 +422,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         let range = d
             .group_range(group)
             .ok_or(Error::Precondition("group fields are not contiguous"))?;
-        for chunk in d.write_chunks_range(self.address, self.pin(), set, range)? {
+        let pin = self.login_pin()?;
+        for chunk in d.write_chunks_range(self.address, pin, set, range)? {
             self.set(&chunk).await?;
         }
-        self.set(&uni::commit(self.address, self.pin(), &[id]))
-            .await
+        self.set(&uni::commit(self.address, pin, &[id])).await
     }
 
     pub async fn read_archive_description(&mut self) -> Result<ArchiveDescription> {

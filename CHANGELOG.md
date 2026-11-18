@@ -4,6 +4,20 @@ All notable changes to `kmb` and `kmb-tokio`. Both crates share one
 version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### `kmb-tokio`
+
+- Security: `Client::set_refuse_cleartext_pin` makes requests that carry
+  the PIN fail before they are sent unless the envelope or a secure
+  transport protects them; `connect_tls` marks its transport secure, and
+  `Client::set_secure_transport` does so for other transports (#6).
+
+### Documentation
+
+- The README explains how a sniffed PIN gives the PIN of every meter with
+  the same credentials, and recommends per-meter credentials (#6).
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
