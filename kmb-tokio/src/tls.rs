@@ -48,6 +48,15 @@ fn der(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
 
 #[must_use]
 pub fn issuer(cert: &[u8]) -> Option<&[u8]> {
+    let rest = tbs_fields(cert)?;
+    let (_signature, _, rest) = der(rest)?;
+    let (0x30, name, _) = der(rest)? else {
+        return None;
+    };
+    Some(name)
+}
+
+fn tbs_fields(cert: &[u8]) -> Option<&[u8]> {
     let (0x30, cert, _) = der(cert)? else {
         return None;
     };
@@ -55,12 +64,52 @@ pub fn issuer(cert: &[u8]) -> Option<&[u8]> {
         return None;
     };
     let (tag, _, rest) = der(tbs)?;
-    let rest = if tag == 0xA0 { der(rest)?.2 } else { rest };
+    Some(if tag == 0xA0 { der(rest)?.2 } else { rest })
+}
+
+#[must_use]
+pub fn subject(cert: &[u8]) -> Option<&[u8]> {
+    let rest = tbs_fields(cert)?;
     let (_signature, _, rest) = der(rest)?;
+    let (0x30, _issuer, rest) = der(rest)? else {
+        return None;
+    };
+    let (0x30, _validity, rest) = der(rest)? else {
+        return None;
+    };
     let (0x30, name, _) = der(rest)? else {
         return None;
     };
     Some(name)
+}
+
+const COMMON_NAME_OID: [u8; 3] = [0x55, 0x04, 0x03];
+
+#[must_use]
+pub fn common_name(cert: &[u8]) -> Option<String> {
+    let mut rdns = subject(cert)?;
+    while !rdns.is_empty() {
+        let (0x31, mut set, rest) = der(rdns)? else {
+            return None;
+        };
+        rdns = rest;
+        while !set.is_empty() {
+            let (0x30, attribute, rest) = der(set)? else {
+                return None;
+            };
+            set = rest;
+            let (0x06, oid, value) = der(attribute)? else {
+                return None;
+            };
+            if oid == COMMON_NAME_OID {
+                let (0x0C | 0x13 | 0x16, text, _) = der(value)? else {
+                    return None;
+                };
+                return String::from_utf8(text.to_vec()).ok();
+            }
+        }
+    }
+    None
 }
 
 #[must_use]
@@ -102,6 +151,7 @@ pub enum Trust {
 #[derive(Debug)]
 pub struct Verifier {
     trust: Trust,
+    common_name: Option<String>,
     provider: Arc<CryptoProvider>,
 }
 
@@ -114,8 +164,15 @@ impl Verifier {
     pub fn new(trust: Trust) -> Self {
         Self {
             trust,
+            common_name: None,
             provider: Arc::new(ring::default_provider()),
         }
+    }
+
+    #[must_use]
+    pub fn expecting_common_name(mut self, name: impl Into<String>) -> Self {
+        self.common_name = Some(name.into());
+        self
     }
 
     fn chain(
@@ -167,7 +224,13 @@ impl ServerCertVerifier for Verifier {
             Trust::Pinned(_) => return Err(tls_error("certificate is not pinned")),
             Trust::Root(x, y) | Trust::RootOrPinned(x, y, _) => (x, y),
         };
-        Self::chain(root, end_entity, intermediates, now).map(|()| ServerCertVerified::assertion())
+        Self::chain(root, end_entity, intermediates, now)?;
+        if let Some(expected) = &self.common_name
+            && common_name(end_entity).as_ref() != Some(expected)
+        {
+            return Err(tls_error("certificate is for another meter"));
+        }
+        Ok(ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -206,14 +269,15 @@ impl ServerCertVerifier for Verifier {
 }
 
 fn try_client_config(
-    trust: Trust,
+    verifier: Verifier,
 ) -> std::result::Result<ClientConfig, tokio_rustls::rustls::Error> {
-    let provider = Arc::new(ring::default_provider());
-    Ok(ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(Verifier { trust, provider }))
-        .with_no_client_auth())
+    Ok(
+        ClientConfig::builder_with_provider(verifier.provider.clone())
+            .with_safe_default_protocol_versions()?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth(),
+    )
 }
 
 #[must_use]
@@ -223,7 +287,8 @@ fn try_client_config(
               connect_tls uses the fallible form"
 )]
 pub fn client_config(trust: Trust) -> ClientConfig {
-    try_client_config(trust).expect("the ring provider supports the default versions")
+    try_client_config(Verifier::new(trust))
+        .expect("the ring provider supports the default versions")
 }
 
 pub async fn connect_tls(
@@ -231,11 +296,19 @@ pub async fn connect_tls(
     address: u8,
     trust: Trust,
 ) -> Result<Client<TlsStream<TcpStream>>> {
+    connect_tls_with(addr, address, Verifier::new(trust)).await
+}
+
+pub async fn connect_tls_with(
+    addr: impl ToSocketAddrs,
+    address: u8,
+    verifier: Verifier,
+) -> Result<Client<TlsStream<TcpStream>>> {
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| Error::Timeout)??;
     tcp.set_nodelay(true)?;
-    let config = try_client_config(trust).map_err(std::io::Error::other)?;
+    let config = try_client_config(verifier).map_err(std::io::Error::other)?;
     let connector = TlsConnector::from(Arc::new(config));
     let name = ServerName::try_from(SERVER_NAME).map_err(std::io::Error::other)?;
     let stream = tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(name, tcp))

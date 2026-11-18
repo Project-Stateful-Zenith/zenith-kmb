@@ -406,3 +406,29 @@ fn batches_zero_geometry() {
     }
     assert_eq!(next, 5);
 }
+
+#[test]
+fn iter_batches_is_lazy_over_the_whole_ring() {
+    let g = Geometry {
+        per_frame: 1,
+        frames: 1,
+    };
+    let first: Vec<_> = g.iter_batches(0..u32::MAX).take(3).collect();
+    assert_eq!(first, [(0, g), (1, g), (2, g)]);
+    let last = g.iter_batches(u32::MAX - 2..u32::MAX).collect::<Vec<_>>();
+    assert_eq!(last, [(u32::MAX - 2, g), (u32::MAX - 1, g)]);
+}
+
+#[test]
+fn iter_batches_matches_batches() {
+    let g = Geometry {
+        per_frame: 7,
+        frames: 3,
+    };
+    for run in [0..0, 0..1, 5..72, 0..25, 3..1000] {
+        assert_eq!(
+            g.iter_batches(run.clone()).collect::<Vec<_>>(),
+            g.batches(run)
+        );
+    }
+}

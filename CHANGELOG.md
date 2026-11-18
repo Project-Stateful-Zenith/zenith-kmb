@@ -6,12 +6,50 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### `kmb`
+
+
+
 ### `kmb-tokio`
 
+- Security: once the envelope is in use, a cleartext reply other than an
+  error is refused instead of being returned unauthenticated (#2).
+- Security: `Client::set_require_encryption` makes a meter that answers in
+  cleartext an error before any frame carrying the PIN is sent (#5).
+- Security: a reply must answer the command that was sent, and an envelope
+  whose random was already seen in the session is refused (#7).
+- Security: an archive download refuses a ring of more than
+  `MAX_RECORDS` records (`Client::set_max_records`) and plans its batches
+  lazily, so a meter can no longer make the client allocate gigabytes (#3).
+- Security: each reply frame has to arrive within `REPLY_TIMEOUT`
+  (`Client::set_reply_timeout`), so a peer that trickles bytes can no
+  longer stall a reply indefinitely (#4).
+- Security: description paging that does not advance is an error instead
+  of an endless loop (#11).
+- Security: `tls::Verifier::expecting_common_name` and
+  `tls::connect_tls_with` bind a root-trusted TLS connection to one meter's
+  certificate common name, so another certificate from the same CA is
+  refused (#8). `tls::subject` and `tls::common_name` read a certificate's
+  subject.
 - Security: `Client::set_refuse_cleartext_pin` makes requests that carry
   the PIN fail before they are sent unless the envelope or a secure
   transport protects them; `connect_tls` marks its transport secure, and
   `Client::set_secure_transport` does so for other transports (#6).
+
+### Examples
+
+- Security: `probe` takes the password and PSK from `KMB_PASSWORD` /
+  `KMB_PSK` or from `--password-file` / `--psk-file`; `--password` and
+  `--psk` are refused, so secrets stay out of process lists and shell
+  history (#9).
+- Security: `probe` prints the names and units the meter sends with control
+  characters escaped, so a meter cannot drive the terminal (#10).
+
+### Dependencies
+
+- Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and
+  tokio 1.54.1, past RUSTSEC-2026-0346 to 0349, 0382, 0385 and 0386.
+  kmb-tokio asks for rustls-webpki 0.103.17 and tokio 1.54 at least (#1).
 
 ### Documentation
 

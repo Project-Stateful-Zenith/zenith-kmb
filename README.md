@@ -90,6 +90,15 @@ For a meter with a login, call `meter.set_credentials(user, password)`
 before the first command; for an encrypted meter, `meter.set_keys(...)`
 with a lookup that returns its PSK.
 
+Once a meter has asked for the envelope, the client accepts only
+authenticated replies (a cleartext error still fails the call), and every
+reply has to answer the command that was sent. A meter that must be
+encrypted can be required with `meter.set_require_encryption(true)`: if it
+answers in cleartext, the call fails before any frame carrying the PIN is
+sent. The envelope has no sequence number, so the client refuses an
+envelope it has already seen in the same session, but it cannot detect a
+reply recorded in an earlier session. Use TLS where that matters.
+
 ## The login PIN
 
 The PIN a meter checks is the first 32 bits of MD5(user || password) plus
@@ -115,9 +124,12 @@ examples. They only read from the meter unless an option says otherwise.
 ```sh
 # Identify a meter, read its clock, configuration and the newest records of every archive
 cargo run --example probe -- 192.0.2.10:2101 --records 3
-cargo run --example probe -- 192.0.2.10:2101 --user admin --password 1234
-cargo run --example probe -- 192.0.2.10:2101 --psk BASE64_PSK
+KMB_PASSWORD=1234 cargo run --example probe -- 192.0.2.10:2101 --user admin
+cargo run --example probe -- 192.0.2.10:2101 --psk-file meter.psk
 cargo run --features tls --example probe -- 192.0.2.10:7101 --tls-root 04HEX...
+
+# Secrets come from KMB_PASSWORD / KMB_PSK or from --password-file / --psk-file,
+# never from the command line, where other users and the shell history see them.
 
 # Clock offset between meter and PC; --adjust sets the meter clock
 cargo run --example clock -- 192.0.2.10:2101
