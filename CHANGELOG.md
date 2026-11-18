@@ -4,6 +4,14 @@ All notable changes to `kmb` and `kmb-tokio`. Both crates share one
 version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Dependencies
+
+- Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and
+  tokio 1.54.1, past RUSTSEC-2026-0346 to 0349, 0382, 0385 and 0386.
+  kmb-tokio asks for rustls-webpki 0.103.17 and tokio 1.54 at least (#1).
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
