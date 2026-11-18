@@ -376,6 +376,90 @@ async fn encryption_without_key() {
 }
 
 #[tokio::test]
+async fn oversized_ring_is_refused_before_any_record_request() {
+    let (mut c, seen) = client(|req| match req.command {
+        22 => vec![Frame::new(1, 22, hex("00 000000000000 FFFFFFFF FFFFFFFF"))],
+        _ => plain(req),
+    });
+    c.identify().await.unwrap();
+    let config = c.read_description(DataSet::Config).await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    let before = seen.lock().unwrap().requests.len();
+    let got = c.download(&config, &layout).await;
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
+    let got = c.download_after(&config, &layout, KmbTime(0)).await;
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
+    let records = seen.lock().unwrap().requests[before..]
+        .iter()
+        .filter(|r| r.command == 22 && r.payload[5..7] != [0, 0])
+        .count();
+    assert_eq!(records, 0);
+}
+
+#[tokio::test]
+async fn record_limit_is_configurable() {
+    let (mut c, _) = client(plain);
+    c.identify().await.unwrap();
+    let config = c.read_description(DataSet::Config).await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    c.set_max_records(2);
+    assert!(matches!(
+        c.download(&config, &layout).await,
+        Err(Error::Decode(_))
+    ));
+    c.set_max_records(3);
+    assert_eq!(c.download(&config, &layout).await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn trickled_reply_hits_the_reply_timeout() {
+    let (a, mut b) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move {
+        let mut buf = [0; 64];
+        if b.read(&mut buf).await.is_err() {
+            return;
+        }
+        if b.write_all(&[1, 0x01, 0x00, 17]).await.is_err() {
+            return;
+        }
+        loop {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if b.write_all(&[0]).await.is_err() {
+                return;
+            }
+        }
+    });
+    let mut c = Client::new(a, 1);
+    c.set_byte_timeout(Duration::from_millis(100));
+    c.set_reply_timeout(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let got = c.read_clock().await;
+    assert!(matches!(got, Err(Error::Timeout)), "{got:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn description_paging_must_advance() {
+    let (mut c, seen) = client(|req| match req.command {
+        112 => vec![Frame::new(1, 112, hex("00 00 00 00 00 01 FF"))],
+        _ => plain(req),
+    });
+    c.identify().await.unwrap();
+    let got = c.read_description(DataSet::Config).await;
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
+    let pages = seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.command == 112)
+        .count();
+    assert_eq!(pages, 1);
+}
+
+#[tokio::test]
 async fn encrypted_session_rejects_plaintext_data() {
     let (mut c, _) = client(encrypting(|inner, reply| {
         (inner.command == 17).then(|| reply.clone())

@@ -8,8 +8,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### `kmb`
 
-- `envelope::random` reads the random of an envelope frame.
-
 ### `kmb-tokio`
 
 - Security: once the envelope is in use, a cleartext reply other than an
@@ -18,6 +16,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
   cleartext an error before any frame carrying the PIN is sent (#5).
 - Security: a reply must answer the command that was sent, and an envelope
   whose random was already seen in the session is refused (#7).
+- Security: an archive download refuses a ring of more than
+  `MAX_RECORDS` records (`Client::set_max_records`) and plans its batches
+  lazily, so a meter can no longer make the client allocate gigabytes (#3).
+- Security: each reply frame has to arrive within `REPLY_TIMEOUT`
+  (`Client::set_reply_timeout`), so a peer that trickles bytes can no
+  longer stall a reply indefinitely (#4).
+- Security: description paging that does not advance is an error instead
+  of an endless loop (#11).
 
 ### Dependencies
 
