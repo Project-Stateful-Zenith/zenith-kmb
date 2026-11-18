@@ -42,9 +42,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For a meter with a login, call `meter.set_credentials(user, password)`
 before the first command; for an encrypted link, `meter.set_keys(...)`
-with a lookup that returns the meter's PSK. Over TLS, `tls::connect_tls`
+with a lookup that returns the meter's PSK, and
+`meter.set_require_encryption(true)` to refuse a meter that answers in
+cleartext. Over TLS, `tls::connect_tls`
 takes the trust to check the meter's certificate against: a root CA key,
-certificate pins, or both. No root key is built in.
+certificate pins, or both. No root key is built in. A root key only proves
+that the certificate comes from that CA, so any meter of the same CA passes.
+To accept one meter only, pin its certificate, or use `tls::connect_tls_with`
+with `Verifier::new(trust).expecting_common_name(...)` when the CA gives each
+meter its own common name.
+
+## Limits
+
+Replies come from the meter and are not trusted to be sane. Each reply
+frame has to arrive within `REPLY_TIMEOUT` (60 s, `set_reply_timeout`) on
+top of the idle timeout between reads, description paging has to move
+forward, and an archive download refuses a ring of more than `MAX_RECORDS`
+records (1 048 576, `set_max_records`) before it asks for any record.
 
 ## Features
 

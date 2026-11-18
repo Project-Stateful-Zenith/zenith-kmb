@@ -178,33 +178,56 @@ impl Geometry {
 
     #[must_use]
     pub fn batches(&self, run: Range<u32>) -> Vec<(u32, Self)> {
-        let whole = Self {
-            per_frame: self.per_frame.max(1),
-            frames: self.frames.max(1),
-        };
+        self.iter_batches(run).collect()
+    }
+
+    #[must_use]
+    pub fn iter_batches(&self, run: Range<u32>) -> Batches {
+        Batches {
+            whole: Self {
+                per_frame: self.per_frame.max(1),
+                frames: self.frames.max(1),
+            },
+            start: run.start,
+            end: run.end,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Batches {
+    whole: Geometry,
+    start: u32,
+    end: u32,
+}
+
+impl Iterator for Batches {
+    type Item = (u32, Geometry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start >= self.end {
+            return None;
+        }
+        let whole = self.whole;
         let per = u32::from(whole.per_frame);
         let full = per.saturating_mul(u32::from(whole.frames));
-        let mut out = Vec::new();
-        let mut start = run.start;
-        while start < run.end {
-            let left = run.end.saturating_sub(start);
-            let g = if left >= full {
-                whole
-            } else if left >= per {
-                Self {
-                    per_frame: whole.per_frame,
-                    frames: u8::try_from(left.checked_div(per).unwrap_or(1)).unwrap_or(u8::MAX),
-                }
-            } else {
-                Self {
-                    per_frame: u16::try_from(left).unwrap_or(u16::MAX),
-                    frames: 1,
-                }
-            };
-            out.push((start, g));
-            start =
-                start.saturating_add(u32::from(g.per_frame).saturating_mul(u32::from(g.frames)));
-        }
-        out
+        let left = self.end.saturating_sub(self.start);
+        let g = if left >= full {
+            whole
+        } else if left >= per {
+            Geometry {
+                per_frame: whole.per_frame,
+                frames: u8::try_from(left.checked_div(per).unwrap_or(1)).unwrap_or(u8::MAX),
+            }
+        } else {
+            Geometry {
+                per_frame: u16::try_from(left).unwrap_or(u16::MAX),
+                frames: 1,
+            }
+        };
+        let start = self.start;
+        self.start =
+            start.saturating_add(u32::from(g.per_frame).saturating_mul(u32::from(g.frames)));
+        Some((start, g))
     }
 }

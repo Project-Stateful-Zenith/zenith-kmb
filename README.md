@@ -90,6 +90,15 @@ For a meter with a login, call `meter.set_credentials(user, password)`
 before the first command; for an encrypted meter, `meter.set_keys(...)`
 with a lookup that returns its PSK.
 
+Once a meter has asked for the envelope, the client accepts only
+authenticated replies (a cleartext error still fails the call), and every
+reply has to answer the command that was sent. A meter that must be
+encrypted can be required with `meter.set_require_encryption(true)`: if it
+answers in cleartext, the call fails before any frame carrying the PIN is
+sent. The envelope has no sequence number, so the client refuses an
+envelope it has already seen in the same session, but it cannot detect a
+reply recorded in an earlier session. Use TLS where that matters.
+
 ## Command-line examples
 
 `kmb-tokio/examples` has three small tools that also serve as worked

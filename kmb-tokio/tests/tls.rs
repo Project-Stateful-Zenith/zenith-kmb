@@ -24,6 +24,11 @@ fn ca(name: &str) -> CertificateParams {
 
 #[cfg(test)]
 fn chain() -> Chain {
+    chain_for("default (factory default)")
+}
+
+#[cfg(test)]
+fn chain_for(leaf_name: &str) -> Chain {
     let root_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let root_params = ca("Test Root CA");
     let root = Issuer::from_params(&root_params, &root_key);
@@ -35,7 +40,7 @@ fn chain() -> Chain {
     let mut leaf_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     leaf_params
         .distinguished_name
-        .push(DnType::CommonName, "default (factory default)");
+        .push(DnType::CommonName, leaf_name);
     let leaf = leaf_params.signed_by(&leaf_key, &mid).unwrap();
     let point = root_key.public_key_raw();
     assert_eq!((point.len(), point[0]), (65, 4));
@@ -49,8 +54,13 @@ fn chain() -> Chain {
 
 #[cfg(test)]
 fn check(trust: Trust, c: &Chain) -> bool {
+    check_with(&Verifier::new(trust), c)
+}
+
+#[cfg(test)]
+fn check_with(verifier: &Verifier, c: &Chain) -> bool {
     let name = ServerName::try_from(tls::SERVER_NAME).unwrap();
-    Verifier::new(trust)
+    verifier
         .verify_server_cert(
             &c.leaf,
             std::slice::from_ref(&c.intermediate),
@@ -138,4 +148,50 @@ fn root_point_from_hex() {
     assert_eq!(tls::parse_p256_point(&xy), None);
     assert_eq!(tls::parse_hex::<2>("AB:cd"), Some([0xAB, 0xCD]));
     assert_eq!(tls::parse_hex::<2>("ABzz"), None);
+}
+
+#[test]
+fn expected_common_name() {
+    let c = chain_for("meter 12345");
+    let root = || Trust::Root(c.root_x, c.root_y);
+    assert!(check_with(
+        &Verifier::new(root()).expecting_common_name("meter 12345"),
+        &c
+    ));
+    assert!(!check_with(
+        &Verifier::new(root()).expecting_common_name("meter 54321"),
+        &c
+    ));
+    assert!(check(root(), &c));
+    let pin = tls::fingerprint(&c.leaf);
+    assert!(check_with(
+        &Verifier::new(Trust::Pinned(vec![pin])).expecting_common_name("meter 54321"),
+        &c
+    ));
+}
+
+#[test]
+fn common_name_of_a_certificate() {
+    let c = chain_for("meter 12345");
+    assert_eq!(tls::common_name(&c.leaf).as_deref(), Some("meter 12345"));
+    assert_eq!(
+        tls::common_name(&c.intermediate).as_deref(),
+        Some("Intermediate CA")
+    );
+    assert!(tls::common_name(&[0x30, 0x03, 0x02, 0x01]).is_none());
+}
+
+#[test]
+fn subject_malformed() {
+    let der = chain().leaf.to_vec();
+    for len in 0..der.len() {
+        let _ = tls::common_name(&der[..len]);
+    }
+    for i in 0..der.len() {
+        for bit in 0..8 {
+            let mut bad = der.clone();
+            bad[i] ^= 1 << bit;
+            let _ = tls::common_name(&bad);
+        }
+    }
 }
