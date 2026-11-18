@@ -8,6 +8,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### `kmb`
 
+
+
 ### `kmb-tokio`
 
 - Security: once the envelope is in use, a cleartext reply other than an
@@ -24,6 +26,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
   longer stall a reply indefinitely (#4).
 - Security: description paging that does not advance is an error instead
   of an endless loop (#11).
+- Security: `tls::Verifier::expecting_common_name` and
+  `tls::connect_tls_with` bind a root-trusted TLS connection to one meter's
+  certificate common name, so another certificate from the same CA is
+  refused (#8). `tls::subject` and `tls::common_name` read a certificate's
+  subject.
 
 ### Dependencies
 

@@ -46,7 +46,11 @@ with a lookup that returns the meter's PSK, and
 `meter.set_require_encryption(true)` to refuse a meter that answers in
 cleartext. Over TLS, `tls::connect_tls`
 takes the trust to check the meter's certificate against: a root CA key,
-certificate pins, or both. No root key is built in.
+certificate pins, or both. No root key is built in. A root key only proves
+that the certificate comes from that CA, so any meter of the same CA passes.
+To accept one meter only, pin its certificate, or use `tls::connect_tls_with`
+with `Verifier::new(trust).expecting_common_name(...)` when the CA gives each
+meter its own common name.
 
 ## Limits
 
