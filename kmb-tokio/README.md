@@ -46,6 +46,14 @@ with a lookup that returns the meter's PSK. Over TLS, `tls::connect_tls`
 takes the trust to check the meter's certificate against: a root CA key,
 certificate pins, or both. No root key is built in.
 
+## Limits
+
+Replies come from the meter and are not trusted to be sane. Each reply
+frame has to arrive within `REPLY_TIMEOUT` (60 s, `set_reply_timeout`) on
+top of the idle timeout between reads, description paging has to move
+forward, and an archive download refuses a ring of more than `MAX_RECORDS`
+records (1 048 576, `set_max_records`) before it asks for any record.
+
 ## Features
 
 | Feature | Adds |
