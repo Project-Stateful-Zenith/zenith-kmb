@@ -317,5 +317,6 @@ pub async fn connect_tls_with(
     tokio::time::sleep(SETTLE).await;
     let mut client = Client::new(stream, address);
     client.set_one_frame_archives(true);
+    client.set_secure_transport(true);
     Ok(client)
 }

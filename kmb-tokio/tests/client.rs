@@ -588,3 +588,69 @@ async fn replayed_envelope_is_rejected() {
     let got = c.read_clock().await;
     assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
 }
+
+#[tokio::test]
+async fn cleartext_pin_can_be_refused() {
+    let (mut c, seen) = client(plain);
+    c.set_credentials("admin", "1234");
+    c.set_refuse_cleartext_pin(true);
+    c.identify().await.unwrap();
+    assert!(matches!(
+        c.read_description(DataSet::Config).await,
+        Err(Error::Precondition(_))
+    ));
+    assert!(matches!(
+        c.adjust_clock().await,
+        Err(Error::Precondition(_))
+    ));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .requests
+            .iter()
+            .all(|r| r.command == 1 || r.command == 17)
+    );
+}
+
+#[tokio::test]
+async fn cleartext_pin_refusal_allows_secure_links_and_no_login() {
+    let (mut c, _) = client(plain);
+    c.set_refuse_cleartext_pin(true);
+    c.identify().await.unwrap();
+    assert!(c.read_description(DataSet::Config).await.is_ok());
+
+    let (mut c, _) = client(plain);
+    c.set_credentials("admin", "1234");
+    c.set_refuse_cleartext_pin(true);
+    c.set_secure_transport(true);
+    c.identify().await.unwrap();
+    assert!(c.read_description(DataSet::Config).await.is_ok());
+}
+
+#[tokio::test]
+async fn cleartext_pin_refusal_allows_the_envelope() {
+    let key = psk();
+    let mut counter = 0u8;
+    let (mut c, _) = client(move |req| {
+        if req.command != 111 {
+            return vec![
+                Frame::decode(&hex(
+                    "01 00 0E 81 09 01 00 01 02 03 04 05 06 07 08 09 0A 0B 02 2B",
+                ))
+                .unwrap(),
+            ];
+        }
+        counter = counter.wrapping_add(1);
+        let inner = envelope::unwrap(&key, req).unwrap();
+        let reply = plain(&inner).remove(0);
+        vec![envelope::wrap(&key, &[counter; 32], &reply).unwrap()]
+    });
+    c.set_keys(Box::new(|uid| {
+        (uid == "0001-0203-0405-0607-0809-0A0B").then(psk)
+    }));
+    c.set_credentials("admin", "1234");
+    c.set_refuse_cleartext_pin(true);
+    c.identify().await.unwrap();
+    assert!(c.is_encrypted());
+    assert!(c.read_description(DataSet::Config).await.is_ok());
+}

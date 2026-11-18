@@ -133,8 +133,15 @@ pub struct Client<S> {
     uid: Option<String>,
     keys: Option<KeyLookup>,
     one_frame_archives: bool,
-    require_encryption: bool,
+    policy: LinkPolicy,
     seen_randoms: VecDeque<[u8; envelope::RANDOM_LEN]>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LinkPolicy {
+    require_encryption: bool,
+    secure_transport: bool,
+    refuse_cleartext_pin: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -152,7 +159,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             uid: None,
             keys: None,
             one_frame_archives: false,
-            require_encryption: false,
+            policy: LinkPolicy {
+                require_encryption: false,
+                secure_transport: false,
+                refuse_cleartext_pin: false,
+            },
             seen_randoms: VecDeque::new(),
         }
     }
@@ -178,7 +189,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     }
 
     pub const fn set_require_encryption(&mut self, on: bool) {
-        self.require_encryption = on;
+        self.policy.require_encryption = on;
+    }
+
+    pub const fn set_secure_transport(&mut self, on: bool) {
+        self.policy.secure_transport = on;
+    }
+
+    pub const fn set_refuse_cleartext_pin(&mut self, on: bool) {
+        self.policy.refuse_cleartext_pin = on;
     }
 
     pub const fn set_one_frame_archives(&mut self, on: bool) {
@@ -199,6 +218,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.identify
             .as_ref()
             .map_or(0, |id| pin::wire_pin(self.user_hash, id.device_no))
+    }
+
+    fn login_pin(&self) -> Result<u32> {
+        if self.policy.refuse_cleartext_pin
+            && self.user_hash != 0
+            && self.psk.is_none()
+            && !self.policy.secure_transport
+        {
+            return Err(Error::Precondition(
+                "the PIN would be sent in cleartext; use the envelope or TLS",
+            ));
+        }
+        Ok(self.pin())
     }
 
     pub fn into_inner(self) -> S {
@@ -298,7 +330,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             None if reply.command == envelope::ENVELOPE_COMMAND => {
                 Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
             }
-            None if self.require_encryption && !is_error => {
+            None if self.policy.require_encryption && !is_error => {
                 Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
             }
             _ => Ok(reply),
@@ -394,19 +426,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.read_clock().await?;
         let half_ms = started.elapsed().as_millis() / 2;
         let time = now().add_ms(u64::try_from(half_ms).unwrap_or(u64::MAX));
-        self.set(&command::adjust_time_universal(
-            self.address,
-            self.pin(),
-            time,
-        ))
-        .await?;
+        let pin = self.login_pin()?;
+        self.set(&command::adjust_time_universal(self.address, pin, time))
+            .await?;
         Ok(time)
     }
 
     async fn uni_page(&mut self, set: DataSet, rezim: u8, start: u16) -> Result<Vec<u8>> {
         let frame = uni::get(
             self.address,
-            self.pin(),
+            self.login_pin()?,
             set,
             rezim,
             start,
@@ -466,10 +495,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         d: &Description,
         changed_groups: &[u8],
     ) -> Result<()> {
-        for chunk in d.write_chunks(self.address, self.pin(), set)? {
+        let pin = self.login_pin()?;
+        for chunk in d.write_chunks(self.address, pin, set)? {
             self.set(&chunk).await?;
         }
-        self.set(&uni::commit(self.address, self.pin(), changed_groups))
+        self.set(&uni::commit(self.address, pin, changed_groups))
             .await
     }
 
@@ -479,11 +509,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         let range = d
             .group_range(group)
             .ok_or(Error::Precondition("group fields are not contiguous"))?;
-        for chunk in d.write_chunks_range(self.address, self.pin(), set, range)? {
+        let pin = self.login_pin()?;
+        for chunk in d.write_chunks_range(self.address, pin, set, range)? {
             self.set(&chunk).await?;
         }
-        self.set(&uni::commit(self.address, self.pin(), &[id]))
-            .await
+        self.set(&uni::commit(self.address, pin, &[id])).await
     }
 
     pub async fn read_archive_description(&mut self) -> Result<ArchiveDescription> {

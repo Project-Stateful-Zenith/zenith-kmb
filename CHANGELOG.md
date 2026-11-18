@@ -8,7 +8,9 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### `kmb`
 
-
+- `envelope::random` reads the random of an envelope frame.
+- `Geometry::iter_batches` plans archive batches lazily; `batches`
+  collects it.
 
 ### `kmb-tokio`
 
@@ -31,6 +33,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   certificate common name, so another certificate from the same CA is
   refused (#8). `tls::subject` and `tls::common_name` read a certificate's
   subject.
+- Security: `Client::set_refuse_cleartext_pin` makes requests that carry
+  the PIN fail before they are sent unless the envelope or a secure
+  transport protects them; `connect_tls` marks its transport secure, and
+  `Client::set_secure_transport` does so for other transports (#6).
 
 ### Examples
 
@@ -46,6 +52,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and
   tokio 1.54.1, past RUSTSEC-2026-0346 to 0349, 0382, 0385 and 0386.
   kmb-tokio asks for rustls-webpki 0.103.17 and tokio 1.54 at least (#1).
+
+### Documentation
+
+- The README explains how a sniffed PIN gives the PIN of every meter with
+  the same credentials, and recommends per-meter credentials (#6).
 
 ## [1.1.4] - 2026-10-20
 

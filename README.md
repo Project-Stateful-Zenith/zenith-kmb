@@ -43,7 +43,7 @@ What the protocol covers:
   the encrypted envelope (AES-128-CBC with HMAC-SHA256, keyed by a per-meter
   PSK) of meters that require it. The PIN is the vendor's MD5-derived
   32-bit value and is weak on its own; the envelope or TLS is what protects
-  the link.
+  the link (see [The login PIN](#the-login-pin)).
 - **Universal configuration**: meters describe their own data. The client
   reads those descriptions first and decodes configuration, status, live
   values and archive records from them, so new fields need no code change.
@@ -98,6 +98,23 @@ answers in cleartext, the call fails before any frame carrying the PIN is
 sent. The envelope has no sequence number, so the client refuses an
 envelope it has already seen in the same session, but it cannot detect a
 reply recorded in an earlier session. Use TLS where that matters.
+
+## The login PIN
+
+The PIN a meter checks is the first 32 bits of MD5(user || password) plus
+the meter's serial number. There is no salt, challenge or session value,
+and the serial is in the cleartext identify reply. Anyone who sees one PIN
+on a cleartext link can therefore subtract the serial, compute the PIN for
+every other meter with the same user and password, and guess the password
+offline. This is the vendor's scheme; the client cannot change it.
+
+- Give every meter its own user and password, so one PIN opens one meter.
+- Reach PIN-only meters over TLS or the envelope, or over a network nobody
+  else can watch.
+- `meter.set_refuse_cleartext_pin(true)` makes every request that carries
+  the PIN fail before it is sent unless the envelope is active or the
+  transport is TLS (`connect_tls` marks it so; for another secure
+  transport call `meter.set_secure_transport(true)`).
 
 ## Command-line examples
 
