@@ -42,7 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For a meter with a login, call `meter.set_credentials(user, password)`
 before the first command; for an encrypted link, `meter.set_keys(...)`
-with a lookup that returns the meter's PSK. Over TLS, `tls::connect_tls`
+with a lookup that returns the meter's PSK, and
+`meter.set_require_encryption(true)` to refuse a meter that answers in
+cleartext. Over TLS, `tls::connect_tls`
 takes the trust to check the meter's certificate against: a root CA key,
 certificate pins, or both. No root key is built in.
 

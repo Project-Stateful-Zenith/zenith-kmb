@@ -8,9 +8,11 @@ use kmb::archive::uni::{Layout, Reject};
 use kmb::archive::{self, Cursor, Geometry, RecordAtTime, ReplyHeader};
 use kmb::command;
 use kmb::envelope::{self, Handshake, Psk, uid_string};
+use kmb::reply::ERROR_FLAG;
 use kmb::uni::{self, ArchiveDescription, DataSet, Description, Page, Value, rezim};
 use kmb::{DecodeError, EnvelopeError, ErrorCode, Frame, FrameDecoder, FrameError};
 use kmb::{Identify, KmbTime, Reply, Rtc, pin};
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -25,6 +27,7 @@ pub const MAX_RECORDS: u32 = 1 << 20;
 pub const SETTLE: Duration = Duration::from_millis(300);
 pub const PAGE_ATTEMPTS: usize = 4;
 pub const BATCH_FOLLOW_UPS: usize = 9;
+pub const REPLAY_WINDOW: usize = 1024;
 
 #[derive(Debug)]
 pub enum Error {
@@ -130,6 +133,8 @@ pub struct Client<S> {
     uid: Option<String>,
     keys: Option<KeyLookup>,
     one_frame_archives: bool,
+    require_encryption: bool,
+    seen_randoms: VecDeque<[u8; envelope::RANDOM_LEN]>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -147,6 +152,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             uid: None,
             keys: None,
             one_frame_archives: false,
+            require_encryption: false,
+            seen_randoms: VecDeque::new(),
         }
     }
 
@@ -168,6 +175,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub fn set_keys(&mut self, keys: KeyLookup) {
         self.keys = Some(keys);
+    }
+
+    pub const fn set_require_encryption(&mut self, on: bool) {
+        self.require_encryption = on;
     }
 
     pub const fn set_one_frame_archives(&mut self, on: bool) {
@@ -199,7 +210,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             Some(psk) => {
                 let mut random = [0; envelope::RANDOM_LEN];
                 getrandom::fill(&mut random).map_err(|_| Error::Random)?;
-                envelope::wrap(psk, &random, frame)?
+                let wire = envelope::wrap(psk, &random, frame)?;
+                self.remember_random(random);
+                wire
             }
             None => frame.clone(),
         };
@@ -241,21 +254,62 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         };
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            let mut reply = self.read_frame().await?;
-            if reply.command == envelope::ENVELOPE_COMMAND {
-                let psk = self
-                    .psk
-                    .as_ref()
-                    .ok_or(EnvelopeError::NotEnvelope(reply.command))?;
-                reply = envelope::unwrap(psk, &reply)?;
-            }
+            let reply = self.read_frame().await?;
+            let reply = match self.open(reply) {
+                Ok(reply) => reply,
+                Err(e) => {
+                    self.decoder.clear();
+                    return Err(e);
+                }
+            };
             if reply.address != frame.address {
                 self.decoder.clear();
                 return Err(Error::WrongAddress(reply.address));
             }
+            if reply.command != frame.command && reply.command != frame.command | ERROR_FLAG {
+                self.decoder.clear();
+                return Err(Error::Decode(DecodeError::Invalid {
+                    structure: "reply",
+                    reason: "command differs from the request",
+                }));
+            }
             out.push(reply);
         }
         Ok(out)
+    }
+
+    fn open(&mut self, reply: Frame) -> Result<Frame> {
+        let is_error = reply.command >= ERROR_FLAG;
+        match &self.psk {
+            Some(psk) if reply.command == envelope::ENVELOPE_COMMAND => {
+                let random = *envelope::random(&reply)
+                    .ok_or(EnvelopeError::BadLength(reply.payload.len()))?;
+                let inner = envelope::unwrap(psk, &reply)?;
+                if self.seen_randoms.contains(&random) {
+                    return Err(Error::Decode(DecodeError::Invalid {
+                        structure: "envelope",
+                        reason: "random repeats an earlier envelope",
+                    }));
+                }
+                self.remember_random(random);
+                Ok(inner)
+            }
+            Some(_) if !is_error => Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command))),
+            None if reply.command == envelope::ENVELOPE_COMMAND => {
+                Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
+            }
+            None if self.require_encryption && !is_error => {
+                Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
+            }
+            _ => Ok(reply),
+        }
+    }
+
+    fn remember_random(&mut self, random: [u8; envelope::RANDOM_LEN]) {
+        if self.seen_randoms.len() >= REPLAY_WINDOW {
+            self.seen_randoms.pop_front();
+        }
+        self.seen_randoms.push_back(random);
     }
 
     fn handshake(&mut self, data: &[u8]) -> Result<()> {

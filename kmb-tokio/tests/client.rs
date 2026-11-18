@@ -318,25 +318,39 @@ fn psk() -> Psk {
     Psk(std::array::from_fn(|i| u8::try_from(i).unwrap()))
 }
 
-#[tokio::test]
-async fn encryption_handshake() {
+const ENCRYPTION_REQUIRED: &str = "01 00 0E 81 09 01 00 01 02 03 04 05 06 07 08 09 0A 0B 02 2B";
+
+#[cfg(test)]
+fn encrypting(
+    mut answer: impl FnMut(&Frame, &Frame) -> Option<Frame> + Send + 'static,
+) -> impl FnMut(&Frame) -> Vec<Frame> + Send + 'static {
     let key = psk();
-    let (mut c, seen) = client(move |req| {
+    let mut counter = 0u8;
+    move |req| {
         if req.command != 111 {
-            return vec![
-                Frame::decode(&hex(
-                    "01 00 0E 81 09 01 00 01 02 03 04 05 06 07 08 09 0A 0B 02 2B",
-                ))
-                .unwrap(),
-            ];
+            return vec![Frame::decode(&hex(ENCRYPTION_REQUIRED)).unwrap()];
         }
         let inner = envelope::unwrap(&key, req).unwrap();
         let reply = plain(&inner).remove(0);
-        vec![envelope::wrap(&key, &[0x5A; 32], &reply).unwrap()]
-    });
+        if let Some(raw) = answer(&inner, &reply) {
+            return vec![raw];
+        }
+        counter = counter.wrapping_add(1);
+        vec![envelope::wrap(&key, &[counter; 32], &reply).unwrap()]
+    }
+}
+
+#[cfg(test)]
+fn keyed(c: &mut Client<DuplexStream>) {
     c.set_keys(Box::new(|uid| {
         (uid == "0001-0203-0405-0607-0809-0A0B").then(psk)
     }));
+}
+
+#[tokio::test]
+async fn encryption_handshake() {
+    let (mut c, seen) = client(encrypting(|_, _| None));
+    keyed(&mut c);
     let id = c.identify().await.unwrap();
     assert_eq!(id.device_no, 12345);
     assert!(c.is_encrypted());
@@ -354,14 +368,7 @@ async fn encryption_handshake() {
 
 #[tokio::test]
 async fn encryption_without_key() {
-    let (mut c, _) = client(|_| {
-        vec![
-            Frame::decode(&hex(
-                "01 00 0E 81 09 01 00 01 02 03 04 05 06 07 08 09 0A 0B 02 2B",
-            ))
-            .unwrap(),
-        ]
-    });
+    let (mut c, _) = client(|_| vec![Frame::decode(&hex(ENCRYPTION_REQUIRED)).unwrap()]);
     match c.identify().await {
         Err(Error::NoKey(uid)) => assert_eq!(uid, "0001-0203-0405-0607-0809-0A0B"),
         other => panic!("{other:?}"),
@@ -450,4 +457,134 @@ async fn description_paging_must_advance() {
         .filter(|r| r.command == 112)
         .count();
     assert_eq!(pages, 1);
+}
+
+#[tokio::test]
+async fn encrypted_session_rejects_plaintext_data() {
+    let (mut c, _) = client(encrypting(|inner, reply| {
+        (inner.command == 17).then(|| reply.clone())
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    assert!(c.is_encrypted());
+    let got = c.read_clock().await;
+    assert!(
+        matches!(
+            got,
+            Err(Error::Envelope(kmb::EnvelopeError::NotEnvelope(17)))
+        ),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn encrypted_session_plaintext_ack_is_not_an_ack() {
+    let (mut c, _) = client(encrypting(|inner, reply| {
+        (inner.command == 18).then(|| reply.clone())
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    let got = c.adjust_clock().await;
+    assert!(
+        matches!(
+            got,
+            Err(Error::Envelope(kmb::EnvelopeError::NotEnvelope(18)))
+        ),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn encrypted_session_plaintext_error_is_a_failure() {
+    let (mut c, _) = client(encrypting(|inner, _| {
+        (inner.command == 17).then(|| Frame::new(1, 0x91, [8]))
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    assert!(matches!(
+        c.read_clock().await,
+        Err(Error::Device {
+            command: 17,
+            code: kmb::ErrorCode::NoPermission
+        })
+    ));
+}
+
+#[tokio::test]
+async fn require_encryption_refuses_a_cleartext_meter() {
+    let (mut c, seen) = client(plain);
+    keyed(&mut c);
+    c.set_credentials("admin", "1234");
+    c.set_require_encryption(true);
+    let got = c.identify().await;
+    assert!(
+        matches!(
+            got,
+            Err(Error::Envelope(kmb::EnvelopeError::NotEnvelope(1)))
+        ),
+        "{got:?}"
+    );
+    assert!(c.identity().is_none());
+    assert_eq!(c.pin(), 0);
+    assert!(c.read_description(DataSet::Config).await.is_err());
+    let reqs = &seen.lock().unwrap().requests;
+    assert_eq!(reqs[0], Frame::new(1, 1, []));
+    assert!(
+        reqs.iter()
+            .all(|r| r.payload.get(..4).is_none_or(|p| p == [0; 4]))
+    );
+}
+
+#[tokio::test]
+async fn require_encryption_accepts_an_encrypting_meter() {
+    let (mut c, _) = client(encrypting(|_, _| None));
+    keyed(&mut c);
+    c.set_require_encryption(true);
+    assert_eq!(c.identify().await.unwrap().device_no, 12345);
+    assert!(c.is_encrypted());
+    assert_eq!(c.read_clock().await.unwrap().time, KmbTime(843_998_400_000));
+}
+
+#[tokio::test]
+async fn reply_to_another_command_is_rejected() {
+    let (mut c, _) = client(|req| match req.command {
+        113 => vec![Frame::new(1, 18, [0])],
+        _ => plain(req),
+    });
+    let got = c.set(&kmb::uni::commit(1, 0, &[2])).await;
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
+}
+
+#[tokio::test]
+async fn replayed_ack_envelope_for_another_command_is_rejected() {
+    let key = psk();
+    let recorded = Arc::new(Mutex::new(None::<Frame>));
+    let store = recorded.clone();
+    let (mut c, _) = client(encrypting(move |inner, reply| match inner.command {
+        18 => {
+            let wire = envelope::wrap(&key, &[0xA5; 32], reply).unwrap();
+            *store.lock().unwrap() = Some(wire.clone());
+            Some(wire)
+        }
+        113 => store.lock().unwrap().clone(),
+        _ => None,
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    c.adjust_clock().await.unwrap();
+    let got = c.set(&kmb::uni::commit(1, c.pin(), &[2])).await;
+    assert!(got.is_err(), "{got:?}");
+}
+
+#[tokio::test]
+async fn replayed_envelope_is_rejected() {
+    let key = psk();
+    let (mut c, _) = client(encrypting(move |inner, reply| {
+        (inner.command == 17).then(|| envelope::wrap(&key, &[0xA5; 32], reply).unwrap())
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    assert!(c.read_clock().await.is_ok());
+    let got = c.read_clock().await;
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
 }
