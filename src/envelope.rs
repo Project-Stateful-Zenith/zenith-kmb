@@ -162,6 +162,15 @@ pub fn wrap(psk: &Psk, random: &[u8; RANDOM_LEN], inner: &Frame) -> Result<Frame
     Ok(Frame::new(inner.address, ENVELOPE_COMMAND, payload))
 }
 
+#[must_use]
+pub fn random(outer: &Frame) -> Option<&[u8; RANDOM_LEN]> {
+    if outer.command != ENVELOPE_COMMAND {
+        return None;
+    }
+    let (_, rest) = outer.payload.split_first()?;
+    rest.first_chunk::<RANDOM_LEN>()
+}
+
 pub fn unwrap(psk: &Psk, outer: &Frame) -> Result<Frame, EnvelopeError> {
     if outer.command != ENVELOPE_COMMAND {
         return Err(EnvelopeError::NotEnvelope(outer.command));

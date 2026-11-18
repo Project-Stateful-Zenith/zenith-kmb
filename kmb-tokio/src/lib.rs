@@ -8,9 +8,11 @@ use kmb::archive::uni::{Layout, Reject};
 use kmb::archive::{self, Cursor, Geometry, RecordAtTime, ReplyHeader};
 use kmb::command;
 use kmb::envelope::{self, Handshake, Psk, uid_string};
+use kmb::reply::ERROR_FLAG;
 use kmb::uni::{self, ArchiveDescription, DataSet, Description, Page, Value, rezim};
 use kmb::{DecodeError, EnvelopeError, ErrorCode, Frame, FrameDecoder, FrameError};
 use kmb::{Identify, KmbTime, Reply, Rtc, pin};
+use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -20,9 +22,12 @@ pub const PORT: u16 = 2101;
 pub const TLS_PORT: u16 = 7101;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const BYTE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+pub const MAX_RECORDS: u32 = 1 << 20;
 pub const SETTLE: Duration = Duration::from_millis(300);
 pub const PAGE_ATTEMPTS: usize = 4;
 pub const BATCH_FOLLOW_UPS: usize = 9;
+pub const REPLAY_WINDOW: usize = 1024;
 
 #[derive(Debug)]
 pub enum Error {
@@ -120,12 +125,16 @@ pub struct Client<S> {
     decoder: FrameDecoder,
     address: u8,
     byte_timeout: Duration,
+    reply_timeout: Duration,
+    max_records: u32,
     user_hash: u32,
     identify: Option<Identify>,
     psk: Option<Psk>,
     uid: Option<String>,
     keys: Option<KeyLookup>,
     one_frame_archives: bool,
+    require_encryption: bool,
+    seen_randoms: VecDeque<[u8; envelope::RANDOM_LEN]>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -135,17 +144,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             decoder: FrameDecoder::new(),
             address,
             byte_timeout: BYTE_TIMEOUT,
+            reply_timeout: REPLY_TIMEOUT,
+            max_records: MAX_RECORDS,
             user_hash: 0,
             identify: None,
             psk: None,
             uid: None,
             keys: None,
             one_frame_archives: false,
+            require_encryption: false,
+            seen_randoms: VecDeque::new(),
         }
     }
 
     pub const fn set_byte_timeout(&mut self, timeout: Duration) {
         self.byte_timeout = timeout;
+    }
+
+    pub const fn set_reply_timeout(&mut self, timeout: Duration) {
+        self.reply_timeout = timeout;
+    }
+
+    pub const fn set_max_records(&mut self, max: u32) {
+        self.max_records = max;
     }
 
     pub fn set_credentials(&mut self, user: &str, password: &str) {
@@ -154,6 +175,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub fn set_keys(&mut self, keys: KeyLookup) {
         self.keys = Some(keys);
+    }
+
+    pub const fn set_require_encryption(&mut self, on: bool) {
+        self.require_encryption = on;
     }
 
     pub const fn set_one_frame_archives(&mut self, on: bool) {
@@ -185,7 +210,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             Some(psk) => {
                 let mut random = [0; envelope::RANDOM_LEN];
                 getrandom::fill(&mut random).map_err(|_| Error::Random)?;
-                envelope::wrap(psk, &random, frame)?
+                let wire = envelope::wrap(psk, &random, frame)?;
+                self.remember_random(random);
+                wire
             }
             None => frame.clone(),
         };
@@ -195,6 +222,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     }
 
     async fn read_frame(&mut self) -> Result<Frame> {
+        tokio::time::timeout(self.reply_timeout, self.read_frame_bytes())
+            .await
+            .map_err(|_| Error::Timeout)?
+    }
+
+    async fn read_frame_bytes(&mut self) -> Result<Frame> {
         let mut buf = [0; 8192];
         loop {
             if let Some(frame) = self.decoder.next_frame() {
@@ -221,21 +254,62 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         };
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            let mut reply = self.read_frame().await?;
-            if reply.command == envelope::ENVELOPE_COMMAND {
-                let psk = self
-                    .psk
-                    .as_ref()
-                    .ok_or(EnvelopeError::NotEnvelope(reply.command))?;
-                reply = envelope::unwrap(psk, &reply)?;
-            }
+            let reply = self.read_frame().await?;
+            let reply = match self.open(reply) {
+                Ok(reply) => reply,
+                Err(e) => {
+                    self.decoder.clear();
+                    return Err(e);
+                }
+            };
             if reply.address != frame.address {
                 self.decoder.clear();
                 return Err(Error::WrongAddress(reply.address));
             }
+            if reply.command != frame.command && reply.command != frame.command | ERROR_FLAG {
+                self.decoder.clear();
+                return Err(Error::Decode(DecodeError::Invalid {
+                    structure: "reply",
+                    reason: "command differs from the request",
+                }));
+            }
             out.push(reply);
         }
         Ok(out)
+    }
+
+    fn open(&mut self, reply: Frame) -> Result<Frame> {
+        let is_error = reply.command >= ERROR_FLAG;
+        match &self.psk {
+            Some(psk) if reply.command == envelope::ENVELOPE_COMMAND => {
+                let random = *envelope::random(&reply)
+                    .ok_or(EnvelopeError::BadLength(reply.payload.len()))?;
+                let inner = envelope::unwrap(psk, &reply)?;
+                if self.seen_randoms.contains(&random) {
+                    return Err(Error::Decode(DecodeError::Invalid {
+                        structure: "envelope",
+                        reason: "random repeats an earlier envelope",
+                    }));
+                }
+                self.remember_random(random);
+                Ok(inner)
+            }
+            Some(_) if !is_error => Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command))),
+            None if reply.command == envelope::ENVELOPE_COMMAND => {
+                Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
+            }
+            None if self.require_encryption && !is_error => {
+                Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))
+            }
+            _ => Ok(reply),
+        }
+    }
+
+    fn remember_random(&mut self, random: [u8; envelope::RANDOM_LEN]) {
+        if self.seen_randoms.len() >= REPLAY_WINDOW {
+            self.seen_randoms.pop_front();
+        }
+        self.seen_randoms.push_back(random);
     }
 
     fn handshake(&mut self, data: &[u8]) -> Result<()> {
@@ -359,7 +433,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             let payload = self.uni_page(set, rezim, start).await?;
             match push(&payload)? {
                 Page::Done => return Ok(()),
-                Page::More(next) => start = next,
+                Page::More(next) if next > start => start = next,
+                Page::More(_) => {
+                    return Err(Error::Decode(DecodeError::Invalid {
+                        structure: "description page",
+                        reason: "the next page does not advance",
+                    }));
+                }
             }
         }
     }
@@ -485,15 +565,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         run: std::ops::Range<u32>,
         geometry: Geometry,
     ) -> Result<Vec<Record>> {
+        self.check_record_count(run.end.saturating_sub(run.start))?;
         let mut out = Vec::new();
-        for (start, g) in geometry.batches(run) {
+        for (start, g) in geometry.iter_batches(run) {
             let end =
                 start.saturating_add(u32::from(g.per_frame).saturating_mul(u32::from(g.frames)));
             let mut next = start;
             let mut retried = false;
             let mut follow_ups: usize = 0;
             while next < end {
-                let Some(&(s, part)) = g.batches(next..end).first() else {
+                let Some((s, part)) = g.iter_batches(next..end).next() else {
                     break;
                 };
                 let got = self.read_batch(layout, s, part).await?;
@@ -520,6 +601,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         Ok(out)
     }
 
+    const fn check_record_count(&self, count: u32) -> Result<()> {
+        if count > self.max_records {
+            return Err(Error::Decode(DecodeError::Invalid {
+                structure: "archive cursor",
+                reason: "more records than the client's limit",
+            }));
+        }
+        Ok(())
+    }
+
     pub async fn download_after(
         &mut self,
         config: &Description,
@@ -527,6 +618,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         after: KmbTime,
     ) -> Result<Vec<Record>> {
         let cursor = self.probe_archive(layout.archive).await?;
+        self.check_record_count(cursor.len())?;
         let found = self.record_at_time(layout.archive, after).await?;
         let Some(slot) = found.slot else {
             return Ok(Vec::new());
@@ -547,6 +639,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub async fn download(&mut self, config: &Description, layout: &Layout) -> Result<Vec<Record>> {
         let cursor = self.probe_archive(layout.archive).await?;
+        self.check_record_count(cursor.len())?;
         let geometry = self.geometry(config, layout);
         let mut out = Vec::new();
         for run in cursor.runs() {
