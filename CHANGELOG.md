@@ -4,6 +4,17 @@ All notable changes to `kmb` and `kmb-tokio`. Both crates share one
 version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Examples
+
+- Security: `probe` takes the password and PSK from `KMB_PASSWORD` /
+  `KMB_PSK` or from `--password-file` / `--psk-file`; `--password` and
+  `--psk` are refused, so secrets stay out of process lists and shell
+  history (#9).
+- Security: `probe` prints the names and units the meter sends with control
+  characters escaped, so a meter cannot drive the terminal (#10).
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
