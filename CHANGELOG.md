@@ -8,7 +8,9 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### `kmb`
 
-
+- `envelope::random` reads the random of an envelope frame.
+- `Geometry::iter_batches` plans archive batches lazily; `batches`
+  collects it.
 
 ### `kmb-tokio`
 
