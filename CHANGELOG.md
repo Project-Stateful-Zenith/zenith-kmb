@@ -19,6 +19,12 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Security: a reply must answer the command that was sent, and an envelope
   whose random was already seen in the session is refused (#7).
 
+### Dependencies
+
+- Security: rustls 0.23.46, rustls-webpki 0.103.17, ctutils 0.4.8 and
+  tokio 1.54.1, past RUSTSEC-2026-0346 to 0349, 0382, 0385 and 0386.
+  kmb-tokio asks for rustls-webpki 0.103.17 and tokio 1.54 at least (#1).
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
