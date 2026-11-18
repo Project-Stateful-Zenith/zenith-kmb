@@ -44,7 +44,11 @@ For a meter with a login, call `meter.set_credentials(user, password)`
 before the first command; for an encrypted link, `meter.set_keys(...)`
 with a lookup that returns the meter's PSK. Over TLS, `tls::connect_tls`
 takes the trust to check the meter's certificate against: a root CA key,
-certificate pins, or both. No root key is built in.
+certificate pins, or both. No root key is built in. A root key only proves
+that the certificate comes from that CA, so any meter of the same CA passes.
+To accept one meter only, pin its certificate, or use `tls::connect_tls_with`
+with `Verifier::new(trust).expecting_common_name(...)` when the CA gives each
+meter its own common name.
 
 ## Features
 

@@ -4,6 +4,16 @@ All notable changes to `kmb` and `kmb-tokio`. Both crates share one
 version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### `kmb-tokio`
+
+- Security: `tls::Verifier::expecting_common_name` and
+  `tls::connect_tls_with` bind a root-trusted TLS connection to one meter's
+  certificate common name, so another certificate from the same CA is
+  refused (#8). `tls::subject` and `tls::common_name` read a certificate's
+  subject.
+
 ## [1.1.4] - 2026-10-20
 
 ### `kmb-tokio`
