@@ -9,7 +9,7 @@ repository = "https://github.com/Project-Stateful-Zenith/zenith-kmb"
 authors = ["Project-Stateful-Zenith Contributors"]
 readme = "README.md"
 homepage = "https://github.com/Project-Stateful-Zenith/zenith-kmb"
-keywords = ["power-quality", "metering", "protocol", "sans-io", "umd-98"]
+keywords = ["power-quality", "metering", "protocol", "sans-io", "pqplus"]
 categories = ["network-programming", "parser-implementations", "hardware-support"]
 
 [lints]

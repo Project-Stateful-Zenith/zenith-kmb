@@ -69,6 +69,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
+- docs/protocol.md describes the wire protocol as the crate implements it:
+  frames, replies, PIN, envelope, TLS, commands, universal configuration and
+  archives, each fact marked tested, implemented or assumed, with the known
+  unknowns. The READMEs now claim support for universal-configuration SMP
+  meters only; other families are identified but not supported.
 - The README explains how a sniffed PIN gives the PIN of every meter with
   the same credentials, and recommends per-meter credentials (#6).
 
