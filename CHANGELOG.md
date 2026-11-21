@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-22
+
 ### `kmb`
 
 - `envelope::random` reads the random of an envelope frame.
@@ -114,5 +116,6 @@ First public release.
 - Feature `tls`: KMB over TLS, trusting a given root CA key, certificate
   pins, or both. No root key is built in.
 
+[1.2.0]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.2.0
 [1.1.4]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.4
 [1.1.3]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.3
