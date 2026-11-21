@@ -30,19 +30,22 @@ Contents:
 
 ### Evidence levels
 
-Every fact below carries one of three evidence levels:
+Every fact below carries one of four evidence levels:
 
 | Level | Meaning |
 | --- | --- |
 | tested | a test in this repository pins the bytes or the behaviour |
 | implemented | the code does it, but no test pins it |
 | assumed | the code picks a value or a reading that no capture from a real meter confirms |
+| observed | seen on one real meter of the SMP family with universal configuration, over TCP |
 
 "Tested" means the crate agrees with its own test vectors. Those vectors were
 constructed for the tests (frames, descriptions, records, the envelope vector,
 the certificates). None of them is documented as a capture from a real meter,
 so "tested" proves internal consistency and stable encoding, not
-interoperability.
+interoperability. "Observed" facts come from that one meter; they are not
+yet pinned by a test, and other meters or firmware may differ. They are
+collected in [Observed on a real meter](#observed-on-a-real-meter).
 
 ### Support matrix
 
@@ -111,7 +114,8 @@ The crate converts to and from Unix time by adding or subtracting
 `KmbTime::from_unix_ms` maps any time before 2000 to the invalid value, and
 `to_unix_ms` returns `None` for it. `KmbTime::add_ms` saturates and leaves the
 invalid value alone. `kmb_tokio::now()` reads the system clock as UTC.
-(tested) A meter may keep local time instead; see
+(tested) On the observed meter the clock and the newest archive record
+agreed with UTC (observed). Other meters may keep local time; see
 [Known unknowns](#13-known-unknowns).
 
 Example (tested): `KmbTime(842_961_600_000)` is 2026-09-17 12:00:00 UTC and
@@ -1040,7 +1044,9 @@ Example: 400 `U32Array` fields with `pb` 1 make two chunks, the first with
 
 `uni::change_counter` reads a one-byte reply. The client has no method for
 it; the synthetic tests use the Config field `Message`/`Cnfgchange` as a
-configuration change counter. (tested as a decoder)
+configuration change counter. (tested as a decoder) On the observed meter
+`Cnfgchange` changed with each committed `write_group`, and no other field
+did (observed).
 
 ### Saved configuration file (`kmbcfg`)
 
@@ -1169,8 +1175,15 @@ slots the client reads, in order (tested):
 Empty ranges are dropped. For a wrapped ring the slot `p = max_rec + cur_rec`
 itself is **not read**; the ring yields `max_rec − 1` records. Examples:
 `max_rec` 10, `cur_rec` −3 gives `8..10, 0..7` (slot 7 skipped, 9 records);
-`cur_rec` −10 gives `1..10` (slot 0 skipped). Whether that slot holds the
-newest record is a [known unknown](#13-known-unknowns).
+`cur_rec` −10 gives `1..10` (slot 0 skipped).
+
+On the observed meter slot `p` is where the next record will be written,
+and it reads as erased, as do a block of slots after it; the meter clears
+them ahead of writing (observed). The slot before `p` holds the newest
+record, the first slot after the erased block holds the oldest, and times
+run on without a gap across the end of the ring to slot 0. So skipping `p`
+loses nothing. `Cursor::len` still counts the erased slots after `p`;
+downloads drop them (step 4 below).
 
 `Cursor::runs_from(slot)` starts at `slot` inside whichever range holds it
 and continues with the later ranges; a slot outside every range gives
@@ -1391,15 +1404,29 @@ and `archive::uni::Reject` (section 10).
 These are places where the crate had to choose. Each would be settled by a
 capture from a real meter, ideally talking to other client software.
 
+### Observed on a real meter
+
+One meter of the SMP family with universal configuration, reached over TCP
+without a login or the envelope, settled these:
+
+| Item | Observed |
+| --- | --- |
+| Reads | identify, clock, Config and Status with all values, archive descriptions decode |
+| Archive request | the 8-byte form is answered; by-parts requests were not tried |
+| Wrapped-ring slot | `max_rec + cur_rec` is the erased next write slot ([ring](#ring-model)) |
+| Time zone | clock and newest record agree with UTC |
+| Config write | `write_group` + commit of one field: reads back; only it and `Cnfgchange` change |
+
+### Still open
+
 | Item | Crate assumption | Capture that would confirm it |
 | --- | --- | --- |
 | Envelope padding | PKCS#7, always 1 to 16 bytes | a meter envelope, decrypted |
 | Envelope MAC input | HMAC-SHA256 (K) of version ‖ random ‖ ciphertext | a meter envelope |
 | Envelope PSK salt | caller's choice; tests use the UID text | a provisioned key and password |
 | Error echo for envelope requests | cleartext, inner command \| 0x80 | a refused request |
-| Archive request length | 8 bytes; 12 for by-parts | meter replies to each length |
-| Wrapped-ring slot | slot `max_rec + cur_rec` is not read | that slot read, with its time |
-| Time zone | meter time is UTC | clock reads on local-time meters |
+| By-parts request length | 12 bytes | a meter reply to a by-parts request |
+| Time zone on other meters | meter time is UTC | clock reads on local-time meters |
 | 30-byte names | a name at the 30 (32) byte limit has no NUL | a name of exactly that length |
 | Saved-config file interop | `Wire` and `Stored` dialects as described | other software's files |
 | "No data" marker | exactly `Un` means nothing to return | when meters send it |

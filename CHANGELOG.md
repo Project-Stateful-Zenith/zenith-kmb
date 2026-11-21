@@ -6,6 +6,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+
+- docs/protocol.md records what one real meter showed: the slot at
+  `max_rec + cur_rec` of a wrapped ring is the erased next write position,
+  so skipping it loses nothing; meter time is UTC; the 8-byte archive
+  request is answered; a group write and commit change only that field and
+  the change counter. A new evidence level, observed, marks these.
+
 ## [1.2.0] - 2026-11-22
 
 ### `kmb`
