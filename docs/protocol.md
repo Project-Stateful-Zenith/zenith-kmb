@@ -255,8 +255,11 @@ any other payload is `Error::NotAcknowledged`. (tested)
 
 The protocol rule is: for a request with a command below 128, an error reply
 carries the command `request | 0x80` and a payload of one error code byte
-followed by optional data. In the crate's reading, the error `command` is the
-reply command minus 0x80 and `code` is the first payload byte. (tested)
+followed by optional data. `Frame::reply_to(request)` applies exactly this
+rule: the reply is an error only when the request is below 128 and the reply
+command is `request | 0x80`; `command` is then the request and `code` the
+first payload byte. `Frame::reply()`, which has no request to go by, reads
+any command of 0x80 or above as an error. (tested)
 
 | Code | `ErrorCode` | Meaning | Client action |
 | --- | --- | --- | --- |
@@ -265,9 +268,9 @@ reply command minus 0x80 and `code` is the first payload byte. (tested)
 | 10 | `KeyInvalid` | the meter could not open the envelope | `Error::KeyRejected` |
 | other | `Other(n)` | not interpreted | `Error::Device` |
 
-Two opcodes in `command::cmd` are 128 or above (145, 146). The crate decodes
-no reply for them; the error convention above is stated for requests below
-128 only.
+Two opcodes in `command::cmd` are 128 or above (145, 146). A reply to them
+is never an error under `reply_to`; `kmb-tokio` uses `reply_to` throughout,
+so their replies are data. (tested)
 
 ### "No data"
 
@@ -288,14 +291,19 @@ active (tested):
 
 With the envelope active, both checks apply to the inner frames. After a
 failed check the client clears its reassembly buffer. Before sending each
-request the client also clears its reassembly buffer. (implemented)
+request the client discards whatever is already waiting on the stream (it
+reads without waiting, at most 64 times) and clears its reassembly buffer,
+so a reply that arrives after a timeout is not taken for the next answer.
+(tested)
 
 ### Multi-frame replies
 
 `Client::exchange(frame, n)` reads `n` reply frames for one request (one when
 the envelope is active). Only archive reads ask for more than one frame
-([section 10](#10-archives)). In the current client, an error on any of the
-`n` frames, including a timeout, fails the whole exchange. (implemented)
+([section 10](#10-archives)). A timeout on the first frame is
+`Error::Timeout`; a timeout on a later frame ends the exchange with the
+frames received so far, and the archive reader asks again from the next
+slot. Any other error on any frame fails the whole exchange. (tested)
 
 ## 5. Login PIN
 
