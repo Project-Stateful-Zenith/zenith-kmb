@@ -1,8 +1,11 @@
 # kmb-tokio
 
 An async client on [Tokio](https://tokio.rs) for PQplus and KMB power
-quality meters (UMD-98 and the SMP family), built on the sans-IO protocol
-crate [`kmb`](https://github.com/Project-Stateful-Zenith/zenith-kmb).
+quality meters of the SMP family with universal configuration, built on the
+sans-IO protocol crate [`kmb`](https://github.com/Project-Stateful-Zenith/zenith-kmb).
+Meters of other families are identified but not otherwise supported. The
+[protocol document](https://github.com/Project-Stateful-Zenith/zenith-kmb/blob/main/docs/protocol.md)
+describes the wire protocol as the crates implement it.
 
 It connects over TCP (port 2101) or, with the `tls` feature, over TLS
 (port 7101), logs in, unwraps encrypted links, and turns requests into

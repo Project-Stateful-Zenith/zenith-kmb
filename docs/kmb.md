@@ -1,10 +1,12 @@
-The KMB/KMP protocol of PQplus and KMB power quality meters (UMD-98 and the
-SMP family), without I/O.
+The KMB/KMP protocol of PQplus and KMB power quality meters of the SMP
+family with universal configuration, without I/O.
 
 `kmb` builds the frames to send and decodes the frames received. It opens
 no sockets and reads no clock, so it works with any transport and every
 step can be tested byte for byte. For a ready client on Tokio, use
 [`kmb-tokio`](https://github.com/Project-Stateful-Zenith/zenith-kmb/tree/main/kmb-tokio).
+The [protocol document](https://github.com/Project-Stateful-Zenith/zenith-kmb/blob/main/docs/protocol.md)
+describes the wire format as this crate implements it.
 
 | Module | Contents |
 | --- | --- |
