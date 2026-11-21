@@ -654,3 +654,88 @@ async fn cleartext_pin_refusal_allows_the_envelope() {
     assert!(c.is_encrypted());
     assert!(c.read_description(DataSet::Config).await.is_ok());
 }
+
+#[tokio::test(start_paused = true)]
+async fn late_reply_is_not_taken_for_the_next_one() {
+    let (a, mut b) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move {
+        let mut dec = FrameDecoder::new();
+        let mut buf = [0; 4096];
+        let mut answered = 0u8;
+        loop {
+            let n = match b.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            dec.push(&buf[..n]);
+            while let Some(Ok(req)) = dec.next_frame() {
+                answered += 1;
+                if answered == 1 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                let reply = Frame::new(req.address, req.command, [answered]);
+                b.write_all(&reply.encode().unwrap()).await.unwrap();
+            }
+        }
+    });
+    let mut c = Client::new(a, 1);
+    c.set_byte_timeout(Duration::from_millis(50));
+    let got = c.get(&Frame::new(1, 31, [])).await;
+    assert!(matches!(got, Err(Error::Timeout)), "{got:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(c.get(&Frame::new(1, 31, [])).await.unwrap(), [2]);
+}
+
+#[tokio::test]
+async fn reply_to_a_high_opcode_is_data() {
+    let (mut c, _) = client(|req| match req.command {
+        146 => vec![Frame::new(1, 146, [1, 2, 3])],
+        _ => vec![Frame::new(1, req.command | 0x80, [8])],
+    });
+    assert_eq!(
+        c.get(&kmb::command::mtu_probe(1, 10)).await.unwrap(),
+        [1, 2, 3]
+    );
+    assert!(matches!(
+        c.get(&Frame::new(1, 17, [])).await,
+        Err(Error::Device {
+            command: 17,
+            code: kmb::ErrorCode::NoPermission
+        })
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn short_multi_frame_reply_keeps_the_frames_received() {
+    let (mut c, seen) = client(|req| match req.command {
+        22 if req.payload[7] == 2 => {
+            let mut frames = plain(req);
+            frames.push(frames[0].clone());
+            frames
+        }
+        _ => plain(req),
+    });
+    c.set_one_frame_archives(false);
+    c.set_byte_timeout(Duration::from_millis(50));
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    let geometry = Geometry {
+        per_frame: 1,
+        frames: 3,
+    };
+    let records = c.read_records(&layout, 0..3, geometry).await.unwrap();
+    assert_eq!(
+        records.iter().map(|r| r.slot).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    let starts: Vec<u32> = seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.command == 22)
+        .map(|r| u32::from_be_bytes(r.payload[1..5].try_into().unwrap()))
+        .collect();
+    assert_eq!(starts, [0, 2]);
+}
