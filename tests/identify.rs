@@ -77,6 +77,19 @@ fn names_88() {
 }
 
 #[test]
+fn names_are_cp1252() {
+    let mut p = hex("00 00 30 39");
+    p.extend(hex(HEADER));
+    let mut name = b"Caf\xE9 \x80".to_vec();
+    name.resize(32, 0);
+    p.extend(name);
+    p.extend(encode_kmb_string("ARCH", 40));
+    let id = Identify::decode(&p).unwrap();
+    assert_eq!(id.name.as_deref(), Some("Caf\u{e9} \u{20ac}"));
+    assert_eq!(kmb_string(b"\xE9\0\xE9"), "\u{e9}");
+}
+
+#[test]
 fn bootloader_ff() {
     let mut p = hex("30 39 94 00 00 30 18 D1 00 02 00 A0 01 FF");
     assert_eq!(Identify::decode(&p).unwrap().bootloader_version, 0);

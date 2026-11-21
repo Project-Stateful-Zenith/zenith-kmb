@@ -11,6 +11,12 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - `envelope::random` reads the random of an envelope frame.
 - `Geometry::iter_batches` plans archive batches lazily; `batches`
   collects it.
+- `Frame::reply_to` reads a reply knowing the request's command.
+- Fix: a reply to a request with an opcode of 128 or more, such as
+  `MTU_PROBE` (146), is no longer read as an error reply by
+  `Frame::reply_to`; only `request | 0x80` to a request below 128 is one.
+- Fix: identify name and archive definition strings (`kmb_string`) are
+  decoded as CP1252, like universal strings, instead of as UTF-8.
 
 ### `kmb-tokio`
 
@@ -37,6 +43,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
   the PIN fail before they are sent unless the envelope or a secure
   transport protects them; `connect_tls` marks its transport secure, and
   `Client::set_secure_transport` does so for other transports (#6).
+- Fix: bytes already waiting on the stream, such as a late reply after a
+  timeout or the tail of a discarded frame, are discarded before each
+  request instead of being read as its reply.
+- Fix: a reply to a request with an opcode of 128 or more is no longer
+  taken for an error reply, and the envelope policy treats it as data.
+- Fix: when a multi-frame archive reply stops short, the frames already
+  received are returned instead of a timeout; a timeout on the first frame
+  is still `Error::Timeout`.
 
 ### Examples
 

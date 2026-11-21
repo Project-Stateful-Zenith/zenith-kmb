@@ -70,10 +70,14 @@ impl std::error::Error for EmptyReply {}
 
 impl Frame {
     pub fn reply(&self) -> Result<Reply<'_>, EmptyReply> {
+        self.reply_to(self.command & !ERROR_FLAG)
+    }
+
+    pub fn reply_to(&self, request: u8) -> Result<Reply<'_>, EmptyReply> {
         let (&first, rest) = self.payload.split_first().ok_or(EmptyReply)?;
-        if let Some(command) = self.command.checked_sub(ERROR_FLAG) {
+        if request < ERROR_FLAG && self.command == request | ERROR_FLAG {
             return Ok(Reply::Error {
-                command,
+                command: request,
                 code: ErrorCode::from(first),
                 data: rest,
             });
