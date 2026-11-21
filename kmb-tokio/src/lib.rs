@@ -14,8 +14,10 @@ use kmb::{DecodeError, EnvelopeError, ErrorCode, Frame, FrameDecoder, FrameError
 use kmb::{Identify, KmbTime, Reply, Rtc, pin};
 use std::collections::VecDeque;
 use std::fmt;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 pub const PORT: u16 = 2101;
@@ -28,6 +30,7 @@ pub const SETTLE: Duration = Duration::from_millis(300);
 pub const PAGE_ATTEMPTS: usize = 4;
 pub const BATCH_FOLLOW_UPS: usize = 9;
 pub const REPLAY_WINDOW: usize = 1024;
+const DRAIN_READS: usize = 64;
 
 #[derive(Debug)]
 pub enum Error {
@@ -276,8 +279,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         }
     }
 
-    pub async fn exchange(&mut self, frame: &Frame, replies: usize) -> Result<Vec<Frame>> {
+    async fn discard_pending(&mut self) -> Result<()> {
+        let mut buf = [0; 8192];
+        for _ in 0..DRAIN_READS {
+            let n = std::future::poll_fn(|cx| {
+                let mut read = ReadBuf::new(&mut buf);
+                match Pin::new(&mut self.io).poll_read(cx, &mut read) {
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(read.filled().len())),
+                    Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                    Poll::Pending => Poll::Ready(Ok(0)),
+                }
+            })
+            .await?;
+            if n == 0 {
+                break;
+            }
+        }
         self.decoder.clear();
+        Ok(())
+    }
+
+    pub async fn exchange(&mut self, frame: &Frame, replies: usize) -> Result<Vec<Frame>> {
+        self.discard_pending().await?;
         self.send(frame).await?;
         let n = if self.psk.is_some() {
             1
@@ -286,8 +309,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         };
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            let reply = self.read_frame().await?;
-            let reply = match self.open(reply) {
+            let reply = match self.read_frame().await {
+                Ok(reply) => reply,
+                Err(Error::Timeout) if !out.is_empty() => break,
+                Err(e) => return Err(e),
+            };
+            let reply = match self.open(reply, frame.command) {
                 Ok(reply) => reply,
                 Err(e) => {
                     self.decoder.clear();
@@ -310,8 +337,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         Ok(out)
     }
 
-    fn open(&mut self, reply: Frame) -> Result<Frame> {
-        let is_error = reply.command >= ERROR_FLAG;
+    fn open(&mut self, reply: Frame, request: u8) -> Result<Frame> {
+        let is_error = request < ERROR_FLAG && reply.command == request | ERROR_FLAG;
         match &self.psk {
             Some(psk) if reply.command == envelope::ENVELOPE_COMMAND => {
                 let random = *envelope::random(&reply)
@@ -364,7 +391,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
                 command,
                 code,
                 data,
-            }) = reply.reply()
+            }) = reply.reply_to(frame.command)
             {
                 match code {
                     ErrorCode::EncryptionRequired if !handshaken && self.psk.is_none() => {
@@ -382,7 +409,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub async fn get(&mut self, frame: &Frame) -> Result<Vec<u8>> {
         let reply = self.call(frame).await?;
-        match reply.reply() {
+        match reply.reply_to(frame.command) {
             Ok(Reply::Data(payload)) => Ok(payload.to_vec()),
             Ok(Reply::NoData) => Err(Error::NoData),
             Ok(Reply::Error { command, code, .. }) => Err(Error::Device { command, code }),
@@ -395,7 +422,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
 
     pub async fn set(&mut self, frame: &Frame) -> Result<()> {
         let reply = self.call(frame).await?;
-        if reply.is_ack() {
+        if reply.reply_to(frame.command) == Ok(Reply::Data(&[0])) {
             Ok(())
         } else {
             Err(Error::NotAcknowledged)
@@ -564,7 +591,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         let mut out = Vec::new();
         let mut slots = start..=u32::MAX;
         for reply in replies {
-            let payload = match reply.reply() {
+            let payload = match reply.reply_to(request.command) {
                 Ok(Reply::Data(p)) => p,
                 Ok(Reply::Error { command, code, .. }) => {
                     return Err(Error::Device { command, code });

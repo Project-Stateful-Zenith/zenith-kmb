@@ -107,7 +107,7 @@ pub fn kmb_string(field: &[u8]) -> String {
         .position(|&b| b == 0)
         .and_then(|end| field.get(..end))
         .unwrap_or(field);
-    String::from_utf8_lossy(text).into_owned()
+    crate::uni::text::decode_cp1252(text)
 }
 
 #[must_use]

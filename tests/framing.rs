@@ -217,3 +217,17 @@ fn truncated_frames_are_refused() {
         assert!(dec.next_frame().is_none(), "first {end} bytes");
     }
 }
+
+#[test]
+fn reply_to_a_high_opcode_is_not_an_error() {
+    let frame = Frame::new(1, 146, [1, 2, 3]);
+    assert_eq!(frame.reply_to(146).unwrap(), Reply::Data(&[1, 2, 3]));
+    assert_eq!(
+        Frame::new(1, 0x91, [8]).reply_to(17).unwrap(),
+        Reply::Error {
+            command: 17,
+            code: ErrorCode::NoPermission,
+            data: &[],
+        }
+    );
+}
