@@ -138,6 +138,14 @@ pub struct Client<S> {
     one_frame_archives: bool,
     policy: LinkPolicy,
     seen_randoms: VecDeque<[u8; envelope::RANDOM_LEN]>,
+    step: Step,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Ready,
+    Settle,
+    Lost,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -168,6 +176,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
                 refuse_cleartext_pin: false,
             },
             seen_randoms: VecDeque::new(),
+            step: Step::Ready,
         }
     }
 
@@ -299,19 +308,64 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         Ok(())
     }
 
+    async fn drain_quiet(&mut self) -> Result<()> {
+        let mut buf = [0; 8192];
+        let (byte_timeout, reply_timeout) = (self.byte_timeout, self.reply_timeout);
+        let io = &mut self.io;
+        let quiet = async {
+            loop {
+                match tokio::time::timeout(byte_timeout, io.read(&mut buf)).await {
+                    Err(_) => return Ok(()),
+                    Ok(Ok(0)) => return Err(Error::Closed),
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(Error::Io(e)),
+                }
+            }
+        };
+        tokio::time::timeout(reply_timeout, quiet)
+            .await
+            .map_err(|_| Error::Timeout)??;
+        self.decoder.clear();
+        Ok(())
+    }
+
+    async fn resync(&mut self) -> Result<()> {
+        self.drain_quiet().await?;
+        self.step = Step::Ready;
+        Ok(())
+    }
+
     pub async fn exchange(&mut self, frame: &Frame, replies: usize) -> Result<Vec<Frame>> {
-        self.discard_pending().await?;
+        match self.step {
+            Step::Lost => {
+                return Err(Error::Precondition(
+                    "a reply timed out and may still arrive; reconnect",
+                ));
+            }
+            Step::Settle => {
+                self.drain_quiet().await?;
+                self.step = Step::Ready;
+            }
+            Step::Ready => self.discard_pending().await?,
+        }
         self.send(frame).await?;
         let n = if self.psk.is_some() {
             1
         } else {
             replies.max(1)
         };
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::new();
         for _ in 0..n {
             let reply = match self.read_frame().await {
                 Ok(reply) => reply,
-                Err(Error::Timeout) if !out.is_empty() => break,
+                Err(Error::Timeout) if !out.is_empty() => {
+                    self.step = Step::Settle;
+                    break;
+                }
+                Err(Error::Timeout) => {
+                    self.step = Step::Lost;
+                    return Err(Error::Timeout);
+                }
                 Err(e) => return Err(e),
             };
             let reply = match self.open(reply, frame.command) {
@@ -479,8 +533,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             uni::COUNT_R_ALL,
         );
         let mut last = Error::Timeout;
-        for _ in 0..PAGE_ATTEMPTS {
-            match self.get(&frame).await {
+        let mut resynced = false;
+        for attempt in 0..PAGE_ATTEMPTS {
+            if attempt > 0 && matches!(last, Error::Timeout) {
+                self.resync().await?;
+                resynced = true;
+            }
+            let got = self.get(&frame).await;
+            if resynced && self.step == Step::Ready {
+                self.step = Step::Settle;
+            }
+            match got {
                 Err(e @ (Error::Timeout | Error::Frame(_) | Error::NoData)) => last = e,
                 other => return other,
             }
@@ -612,6 +675,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
                 return Err(Error::Decode(DecodeError::Invalid {
                     structure: "archive reply",
                     reason: "archive type differs from the request",
+                }));
+            }
+            if archive::records(payload, layout.record_len)
+                .nth(usize::from(g.per_frame))
+                .is_some()
+            {
+                return Err(Error::Decode(DecodeError::Invalid {
+                    structure: "archive reply",
+                    reason: "more records in a frame than were requested",
                 }));
             }
             for rec in archive::records(payload, layout.record_len) {
