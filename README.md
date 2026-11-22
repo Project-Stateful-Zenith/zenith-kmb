@@ -149,7 +149,7 @@ cargo build --workspace
 cargo test --workspace --all-features
 ```
 
-Rust 1.88 or newer. The tests run against recorded frames and an
+Rust 1.88 or newer. The tests run against constructed frames and an
 in-process fake meter; no hardware is needed.
 
 ## Disclaimer

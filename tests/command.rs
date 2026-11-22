@@ -136,3 +136,8 @@ fn set_notebook() {
     assert_eq!(frame.payload[..8], hex("01 02 03 04 00 00 00 00"));
     assert_eq!(frame.payload[8..], notebook);
 }
+
+#[test]
+fn mtu_probe_sizes() {
+    assert_eq!(command::MTU_PROBE_SIZES, [10, 6800, 1300, 500]);
+}

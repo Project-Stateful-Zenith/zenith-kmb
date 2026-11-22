@@ -12,6 +12,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   padding and the MAC input match the crate, a refused envelope comes back
   in cleartext as command 239 with code 10, and `ENC_psk` reads as zeros
   while a written zero key leaves the stored key in place.
+- docs/protocol.md no longer marks as tested what no test pins: validity
+  dates and key usage of a pinned certificate are now "implemented", and the
+  envelope one-frame rule reads the same in both places. README says the
+  tests use constructed frames, not recorded ones.
 
 ### Fixed
 
