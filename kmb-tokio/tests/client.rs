@@ -674,8 +674,10 @@ async fn cleartext_pin_refusal_allows_the_envelope() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn late_reply_is_not_taken_for_the_next_one() {
+async fn timed_out_client_refuses_the_next_request_without_sending() {
     let (a, mut b) = tokio::io::duplex(1 << 16);
+    let received = Arc::new(Mutex::new(0usize));
+    let count = received.clone();
     tokio::spawn(async move {
         let mut dec = FrameDecoder::new();
         let mut buf = [0; 4096];
@@ -685,6 +687,7 @@ async fn late_reply_is_not_taken_for_the_next_one() {
                 Ok(0) | Err(_) => return,
                 Ok(n) => n,
             };
+            *count.lock().unwrap() += n;
             dec.push(&buf[..n]);
             while let Some(Ok(req)) = dec.next_frame() {
                 answered += 1;
@@ -701,7 +704,217 @@ async fn late_reply_is_not_taken_for_the_next_one() {
     let got = c.get(&Frame::new(1, 31, [])).await;
     assert!(matches!(got, Err(Error::Timeout)), "{got:?}");
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(c.get(&Frame::new(1, 31, [])).await.unwrap(), [2]);
+    let sent = *received.lock().unwrap();
+    let got = c.get(&Frame::new(1, 31, [])).await;
+    assert!(matches!(got, Err(Error::Precondition(_))), "{got:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(*received.lock().unwrap(), sent);
+}
+
+#[cfg(test)]
+fn record(slot: u32) -> Vec<u8> {
+    let mut r = hex("0010 0000 000000B0A237A5C0");
+    r.extend(f32::from(u16::try_from(slot).unwrap()).to_be_bytes());
+    let s = kmb::archive::uni::sum(&r);
+    r[2..4].copy_from_slice(&s.to_be_bytes());
+    r
+}
+
+#[cfg(test)]
+fn record_values(layout: &Layout, records: &[kmb_tokio::Record]) -> Vec<(u32, Value)> {
+    records
+        .iter()
+        .map(|r| {
+            let fields = layout.decode(r.bytes.as_ref().unwrap()).unwrap();
+            (r.slot, fields.last().unwrap().1.clone())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn archive_frame(records: impl IntoIterator<Item = u32>) -> Frame {
+    let mut p = hex("00 000000000000 00000064 00000064");
+    for slot in records {
+        p.extend(record(slot));
+    }
+    Frame::new(1, 22, p)
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_archive_reply_after_a_timeout_is_not_taken_for_the_next_one() {
+    let (a, mut b) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move {
+        let mut dec = FrameDecoder::new();
+        let mut buf = [0; 4096];
+        let mut archive_reads = 0u32;
+        loop {
+            let n = match b.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            dec.push(&buf[..n]);
+            while let Some(Ok(req)) = dec.next_frame() {
+                let reply = match req.command {
+                    22 => {
+                        archive_reads += 1;
+                        let delay = if archive_reads == 1 { 200 } else { 10 };
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        let start = u32::from_be_bytes(req.payload[1..5].try_into().unwrap());
+                        archive_frame([start])
+                    }
+                    _ => plain(&req).remove(0),
+                };
+                b.write_all(&reply.encode().unwrap()).await.unwrap();
+            }
+        }
+    });
+    let mut c = Client::new(a, 1);
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    let g = Geometry {
+        per_frame: 1,
+        frames: 1,
+    };
+    c.set_byte_timeout(Duration::from_millis(50));
+    let first = c.read_records(&layout, 0..3, g).await;
+    assert!(matches!(first, Err(Error::Timeout)), "{first:?}");
+    c.set_byte_timeout(Duration::from_secs(5));
+    let again = c.read_records(&layout, 0..3, g).await;
+    let again = again.map(|r| record_values(&layout, &r));
+    assert!(matches!(again, Err(Error::Precondition(_))), "{again:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_frame_after_a_short_reply_is_drained() {
+    let (a, mut b) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move {
+        let mut dec = FrameDecoder::new();
+        let mut buf = [0; 4096];
+        loop {
+            let n = match b.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            dec.push(&buf[..n]);
+            while let Some(Ok(req)) = dec.next_frame() {
+                if req.command != 22 {
+                    let reply = plain(&req).remove(0);
+                    b.write_all(&reply.encode().unwrap()).await.unwrap();
+                    continue;
+                }
+                let start = u32::from_be_bytes(req.payload[1..5].try_into().unwrap());
+                let frames = u32::from(req.payload[7]) + 1;
+                if start == 0 {
+                    let first = archive_frame([0]);
+                    b.write_all(&first.encode().unwrap()).await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    let late = archive_frame([99]);
+                    b.write_all(&late.encode().unwrap()).await.unwrap();
+                    continue;
+                }
+                for slot in start..start + frames {
+                    let reply = archive_frame([slot]);
+                    b.write_all(&reply.encode().unwrap()).await.unwrap();
+                }
+            }
+        }
+    });
+    let mut c = Client::new(a, 1);
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    let geometry = Geometry {
+        per_frame: 1,
+        frames: 3,
+    };
+    c.set_byte_timeout(Duration::from_millis(50));
+    let records = c.read_records(&layout, 0..3, geometry).await.unwrap();
+    assert_eq!(
+        record_values(&layout, &records),
+        [
+            (0, Value::F32(0.0)),
+            (1, Value::F32(1.0)),
+            (2, Value::F32(2.0))
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn description_page_is_retried_after_a_timeout() {
+    let (a, mut b) = tokio::io::duplex(1 << 16);
+    let pages = Arc::new(Mutex::new(0usize));
+    let count = pages.clone();
+    tokio::spawn(async move {
+        let mut dec = FrameDecoder::new();
+        let mut buf = [0; 4096];
+        loop {
+            let n = match b.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            dec.push(&buf[..n]);
+            while let Some(Ok(req)) = dec.next_frame() {
+                if req.command == 112 {
+                    *count.lock().unwrap() += 1;
+                    if *count.lock().unwrap() == 1 {
+                        tokio::time::sleep(Duration::from_millis(80)).await;
+                    }
+                }
+                let reply = plain(&req).remove(0);
+                b.write_all(&reply.encode().unwrap()).await.unwrap();
+            }
+        }
+    });
+    let mut c = Client::new(a, 1);
+    c.identify().await.unwrap();
+    c.set_byte_timeout(Duration::from_millis(50));
+    let d = c.read_description(DataSet::Config).await.unwrap();
+    assert_eq!(d.value("Install", "Unom"), Some(&Value::F32(230.0)));
+    assert_eq!(d.value("Message", "Cnfgchange"), Some(&Value::U8(15)));
+    assert_eq!(*pages.lock().unwrap(), 4);
+    assert_eq!(c.read_clock().await.unwrap().time, KmbTime(843_998_400_000));
+}
+
+#[tokio::test]
+async fn records_beyond_the_request_are_an_error() {
+    let (mut c, seen) = client(|req| match req.command {
+        22 => {
+            let mut p = hex("00 000000000000 00000064 00000064");
+            for _ in 0..4000 {
+                p.extend(hex(RECORD));
+            }
+            vec![Frame::new(req.address, 22, p)]
+        }
+        _ => plain(req),
+    });
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    c.set_max_records(4);
+    let geometry = Geometry {
+        per_frame: 1,
+        frames: 1,
+    };
+    let got = c.read_records(&layout, 0..4, geometry).await;
+    let got = got.map(|r| r.len());
+    assert!(matches!(got, Err(Error::Decode(_))), "{got:?}");
+    let archive_requests = seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.command == 22)
+        .count();
+    assert_eq!(archive_requests, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn exchange_with_a_huge_reply_count_does_not_panic() {
+    let (mut c, _) = client(plain);
+    c.set_byte_timeout(Duration::from_millis(50));
+    let got = c.exchange(&Frame::new(1, 1, []), usize::MAX).await.unwrap();
+    assert_eq!(got.len(), 1);
 }
 
 #[tokio::test]

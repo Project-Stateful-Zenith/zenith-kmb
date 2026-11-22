@@ -296,18 +296,25 @@ active (tested):
 With the envelope active, both checks apply to the inner frames. After a
 failed check the client clears its reassembly buffer. Before sending each
 request the client discards whatever is already waiting on the stream (it
-reads without waiting, at most 64 times) and clears its reassembly buffer,
-so a reply that arrives after a timeout is not taken for the next answer.
-(tested)
+reads without waiting, at most 64 times) and clears its reassembly buffer.
+This drops only bytes that have already arrived; a reply still on its way
+would be taken for the next answer. So after `Error::Timeout` the client is
+out of step: every later request on it fails at once with
+`Error::Precondition` ("reconnect") and nothing is sent. Make a new
+connection to go on. (tested)
 
 ### Multi-frame replies
 
 `Client::exchange(frame, n)` reads `n` reply frames for one request (one when
 the envelope is active). Only archive reads ask for more than one frame
 ([section 10](#10-archives)). A timeout on the first frame is
-`Error::Timeout`; a timeout on a later frame ends the exchange with the
-frames received so far, and the archive reader asks again from the next
-slot. Any other error on any frame fails the whole exchange. (tested)
+`Error::Timeout`, and the client then refuses further requests (above); a
+timeout on a later frame ends the exchange with the frames received so far,
+and the archive reader asks again from the next slot. Such a short reply
+does not stop the client, but before its next request it reads and drops
+bytes until none arrive for the byte timeout, so a late frame of the short
+reply is not taken for the next answer. That wait is bounded by the reply
+timeout. Any other error on any frame fails the whole exchange. (tested)
 
 ## 5. Login PIN
 
@@ -960,7 +967,10 @@ Entries with an empty name are dropped after parsing, and the dropped
 entries do not count towards `total`. For values, start + count must not
 exceed the number of fields known. The client reads each phase from start 0
 and retries a page up to 4 times (`PAGE_ATTEMPTS`) on a timeout, a bad frame
-or "no data". (tested)
+or "no data". Before a retry after a timeout the client reads and drops
+bytes until none arrive for the byte timeout, so the late reply cannot
+answer the retry, and it waits the same way again before the next request.
+If the last attempt times out the client refuses further requests. (tested)
 
 ### Group entry (rezim 0)
 
@@ -1192,8 +1202,12 @@ big-endian (tested):
 
 The records are cut into `record_len` pieces; a shorter remainder is
 ignored. Across the frames of one request, records are numbered
-consecutively from the requested start. A slot number past `u32::MAX` is an
-error. A reply frame that is "no data" or empty ends the batch. (tested)
+consecutively from the requested start. A frame with more records than the
+request asked for per frame is an error (`Decode`, "more records in a frame
+than were requested"); with at most the requested number of frames read,
+no record lies past the end of the requested run. A slot number past
+`u32::MAX` is an error. A reply frame that is "no data" or empty ends the
+batch. (tested)
 
 ### Ring model
 
@@ -1403,6 +1417,12 @@ meter may tolerate others. `REPLY_TIMEOUT` and `BYTE_TIMEOUT` both apply: a
 peer that sends one byte at a time still has to finish within
 `REPLY_TIMEOUT`. (tested)
 
+A timeout with no reply frame leaves the client out of step with the meter:
+it refuses every later request with `Error::Precondition` without sending,
+and the caller has to reconnect. Only the description page retry waits for
+a quiet stream and goes on by itself ([section 9](#9-universal-configuration)).
+(tested)
+
 ## 12. Errors
 
 `kmb_tokio::Error`:
@@ -1410,7 +1430,7 @@ peer that sends one byte at a time still has to finish within
 | Variant | Cause | Caller action |
 | --- | --- | --- |
 | `Io` | socket error, or TLS setup error | reconnect |
-| `Timeout` | connect, byte or reply timeout | retry; reconnect if repeated |
+| `Timeout` | connect, byte or reply timeout | reconnect; the client refuses further requests |
 | `Closed` | the peer closed the connection | reconnect |
 | `Frame` | bad CRC or length, over the decoder limit | retry; the buffer was discarded |
 | `WrongAddress(a)` | reply from another bus address | check the address, retry |
@@ -1427,8 +1447,8 @@ peer that sends one byte at a time still has to finish within
 
 `Decode` covers the command echo, paging, replay, archive type and record
 limit checks. `Precondition` covers: identify first, a universal meter for
-`adjust_clock`, a protected link for the PIN, and a contiguous group for
-`write_group`.
+`adjust_clock`, a protected link for the PIN, a contiguous group for
+`write_group`, and a client that timed out and must be reconnected.
 
 `kmb` errors: `FrameError` (section 3), `DecodeError` (`Length`, `Truncated`,
 `Invalid`), `EnvelopeError` (section 6), `EmptyReply`, `envelope::InvalidPsk`

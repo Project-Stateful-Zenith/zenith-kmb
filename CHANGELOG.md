@@ -19,6 +19,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
   command 239 (111 | 0x80) and code 10. The client now reads that as the
   error reply to the request and returns `Error::KeyRejected` instead of
   `Error::Envelope(NotEnvelope(239))`.
+- kmb-tokio: an archive reply frame that carries more records than were
+  requested is an error. Before, every record was kept, so a meter could
+  return far more than `max_records` and the 1.2.0 memory bound did not
+  hold.
+- kmb-tokio: after `Error::Timeout` the late reply could still arrive and be
+  taken as the answer to the next request, which put archive records under
+  the wrong slots. A client whose request timed out now refuses further
+  requests with `Error::Precondition` until it is reconnected; after a short
+  multi-frame reply it waits for the line to go quiet before the next
+  request, and the description page retry does the same.
+- kmb-tokio: `Client::exchange` no longer panics on a huge reply count.
 
 ### Documentation
 
