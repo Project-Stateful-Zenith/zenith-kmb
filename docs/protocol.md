@@ -269,7 +269,7 @@ any command of 0x80 or above as an error. (tested)
 | --- | --- | --- | --- |
 | 8 | `NoPermission` | the login does not permit it | `Error::Device` |
 | 9 | `EncryptionRequired` | envelope required; data is the handshake | starts the envelope |
-| 10 | `KeyInvalid` | the meter could not open the envelope | `Error::KeyRejected` |
+| 10 | `KeyInvalid` | the meter could not open the envelope ([refusal](#refusal)) | `Error::KeyRejected` |
 | other | `Other(n)` | not interpreted | `Error::Device` |
 
 Two opcodes in `command::cmd` are 128 or above (145, 146). A reply to them
@@ -463,6 +463,41 @@ CRC. (tested)
 
 The ciphertext length is `((inner_payload_len + 6) / 16 + 1) · 16`, so an
 empty inner payload gives 16 bytes and an 81-byte envelope payload. (tested)
+
+The observed meter builds its envelopes the same way: its reply MAC checks
+over version ‖ random ‖ ciphertext with K, and a 32-byte inner frame came
+back with a full block of `0x10` padding, which rules out zero padding. It
+accepted envelopes built by `envelope::wrap`. (observed)
+
+### Refusal
+
+A meter that holds no matching key cannot open the envelope. The observed
+meter then answers in cleartext with command 239 (`111 | 0x80`), not with
+the inner command `| 0x80`. The payload is code 10 followed by the
+handshake data (version and UID). (observed) During an encrypted session
+the client reads such a reply as the error reply to the request, so the
+caller gets `Error::KeyRejected` with the UID. (tested)
+
+Test vector (synthetic UID), refusal to an envelope:
+command 239, payload `0A 01 00 01 02 03 04 05 06 07 08 09 0A 0B`.
+
+### Provisioning
+
+The crate has no method for it; these are Config fields of the
+`Communication` group on the observed meter (observed):
+
+| Field | Seen |
+| --- | --- |
+| `ENC_psk` | 32 bytes; reads back as zeros whether a key is set or not |
+| `ENC_cfg` | 32 bits; low byte `0x6F` with a key: cleartext and envelopes both answered |
+| `ENC_cfg` bit `0x100` | set as well: cleartext requests over TCP get error 9 |
+| `ENC_uid` | the 12-byte UID the handshake carries |
+
+Both were set with `write_group` and a commit. Writing an all-zero
+`ENC_psk` leaves the stored key in place, so a group written back from a
+read does not clear it; to retire a key, write a new random one and discard
+it. A meter that does not require the envelope still answers one, but the
+client only starts the envelope after error 9.
 
 ### Unwrapping
 
@@ -1407,7 +1442,7 @@ capture from a real meter, ideally talking to other client software.
 ### Observed on a real meter
 
 One meter of the SMP family with universal configuration, reached over TCP
-without a login or the envelope, settled these:
+without a login, settled these:
 
 | Item | Observed |
 | --- | --- |
@@ -1416,15 +1451,15 @@ without a login or the envelope, settled these:
 | Wrapped-ring slot | `max_rec + cur_rec` is the erased next write slot ([ring](#ring-model)) |
 | Time zone | clock and newest record agree with UTC |
 | Config write | `write_group` + commit of one field: reads back; only it and `Cnfgchange` change |
+| Envelope | PKCS#7 padding and the MAC input as above; works both ways |
+| Envelope refusal | cleartext command 239, code 10, handshake data ([refusal](#refusal)) |
+| Key fields | `ENC_psk` reads as zeros; a zero write keeps the key ([fields](#provisioning)) |
 
 ### Still open
 
 | Item | Crate assumption | Capture that would confirm it |
 | --- | --- | --- |
-| Envelope padding | PKCS#7, always 1 to 16 bytes | a meter envelope, decrypted |
-| Envelope MAC input | HMAC-SHA256 (K) of version ‖ random ‖ ciphertext | a meter envelope |
 | Envelope PSK salt | caller's choice; tests use the UID text | a provisioned key and password |
-| Error echo for envelope requests | cleartext, inner command \| 0x80 | a refused request |
 | By-parts request length | 12 bytes | a meter reply to a by-parts request |
 | Time zone on other meters | meter time is UTC | clock reads on local-time meters |
 | 30-byte names | a name at the 30 (32) byte limit has no NUL | a name of exactly that length |
