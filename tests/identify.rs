@@ -154,7 +154,45 @@ fn kmb_strings() {
     assert_eq!(kmb_string(b"abcd"), "abcd");
     assert_eq!(encode_kmb_string("", 4), [0, 0, 0, 0]);
     assert_eq!(encode_kmb_string("abcdef", 4), b"abc\0");
-    assert_eq!(encode_kmb_string("abé", 4), b"ab\0\0");
+    assert_eq!(encode_kmb_string("abé", 4), b"ab\xE9\0");
+}
+
+#[test]
+fn kmb_string_round_trips_ascii() {
+    let wire = encode_kmb_string("S01 meter", 32);
+    assert_eq!(wire.len(), 32);
+    assert_eq!(kmb_string(&wire), "S01 meter");
+}
+
+#[test]
+fn kmb_string_round_trips_cp1252() {
+    let wire = encode_kmb_string("Caf\u{e9}", 32);
+    assert_eq!(wire.get(..5), Some(&b"Caf\xE9\0"[..]));
+    assert_eq!(wire.len(), 32);
+    assert_eq!(kmb_string(&wire), "Caf\u{e9}");
+}
+
+#[test]
+fn kmb_string_round_trips_euro() {
+    let wire = encode_kmb_string("5 \u{20ac}", 8);
+    assert_eq!(wire, b"5 \x80\0\0\0\0\0");
+    assert_eq!(kmb_string(&wire), "5 \u{20ac}");
+}
+
+#[test]
+fn kmb_string_truncates_to_n_minus_one() {
+    let wire = encode_kmb_string("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", 4);
+    assert_eq!(wire, b"\xE9\xE9\xE9\0");
+    assert_eq!(kmb_string(&wire), "\u{e9}\u{e9}\u{e9}");
+    assert_eq!(encode_kmb_string("abc", 0), b"");
+    assert_eq!(encode_kmb_string("abc", 1), b"\0");
+}
+
+#[test]
+fn kmb_string_unrepresentable_becomes_question_mark() {
+    let wire = encode_kmb_string("a\u{3a9}\u{1f600}b", 6);
+    assert_eq!(wire, b"a??b\0\0");
+    assert_eq!(kmb_string(&wire), "a??b");
 }
 
 #[test]

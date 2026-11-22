@@ -112,14 +112,8 @@ pub fn kmb_string(field: &[u8]) -> String {
 
 #[must_use]
 pub fn encode_kmb_string(text: &str, n: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(n);
-    for c in text.chars() {
-        if out.len().saturating_add(c.len_utf8()) > n.saturating_sub(1) {
-            break;
-        }
-        let mut buf = [0; 4];
-        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-    }
+    let mut out = crate::uni::text::encode_cp1252(text);
+    out.truncate(n.saturating_sub(1));
     out.resize(n, 0);
     out
 }
