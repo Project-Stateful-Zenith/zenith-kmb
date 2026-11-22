@@ -6,6 +6,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- kmb-tokio: a meter that cannot open an envelope answers in cleartext with
+  command 239 (111 | 0x80) and code 10. The client now reads that as the
+  error reply to the request and returns `Error::KeyRejected` instead of
+  `Error::Envelope(NotEnvelope(239))`.
+
 ### Documentation
 
 - docs/protocol.md records what one real meter showed: the slot at

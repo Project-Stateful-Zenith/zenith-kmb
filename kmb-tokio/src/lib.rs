@@ -353,6 +353,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
                 self.remember_random(random);
                 Ok(inner)
             }
+            Some(_)
+                if request < ERROR_FLAG
+                    && reply.command == envelope::ENVELOPE_COMMAND | ERROR_FLAG =>
+            {
+                Ok(Frame::new(
+                    reply.address,
+                    request | ERROR_FLAG,
+                    reply.payload,
+                ))
+            }
             Some(_) if !is_error => Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command))),
             None if reply.command == envelope::ENVELOPE_COMMAND => {
                 Err(Error::Envelope(EnvelopeError::NotEnvelope(reply.command)))

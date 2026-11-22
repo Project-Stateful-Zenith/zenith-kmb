@@ -511,6 +511,24 @@ async fn encrypted_session_plaintext_error_is_a_failure() {
 }
 
 #[tokio::test]
+async fn envelope_the_meter_cannot_open_is_a_rejected_key() {
+    let (mut c, _) = client(encrypting(|_, _| {
+        Some(Frame::new(
+            1,
+            0xEF,
+            hex("0A 01 00 01 02 03 04 05 06 07 08 09 0A 0B"),
+        ))
+    }));
+    keyed(&mut c);
+    match c.identify().await {
+        Err(Error::KeyRejected(Some(uid))) => {
+            assert_eq!(uid, "0001-0203-0405-0607-0809-0A0B");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn require_encryption_refuses_a_cleartext_meter() {
     let (mut c, seen) = client(plain);
     keyed(&mut c);
