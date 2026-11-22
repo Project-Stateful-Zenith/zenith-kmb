@@ -1,5 +1,9 @@
+use aes::cipher::KeyIvInit;
+use aes::cipher::block_padding::{NoPadding, Padding, Pkcs7};
+use hmac::Mac;
 use kmb::envelope::{self, uid_string};
-use kmb::{EnvelopeError, Frame, Handshake, Psk, Reply, pin};
+use kmb::{EnvelopeError, Frame, FrameError, Handshake, Psk, Reply, pin};
+use sha2::Digest;
 
 #[cfg(test)]
 fn hex(s: &str) -> Vec<u8> {
@@ -163,4 +167,73 @@ fn unwrap_refuses_every_bad_length() {
             "payload of {len} bytes"
         );
     }
+}
+
+#[cfg(test)]
+fn sealed<P: Padding>(psk: &Psk, random: &[u8; 32], plain: &[u8]) -> Frame {
+    use aes::cipher::BlockModeEncrypt;
+    let key = sha2::Sha256::new()
+        .chain_update(psk.0)
+        .chain_update(random)
+        .finalize();
+    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(&key[..16], &random[..16])
+        .unwrap()
+        .encrypt_padded_vec::<P>(plain);
+    let mut payload = vec![1];
+    payload.extend_from_slice(random);
+    payload.extend(cipher);
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(&key).unwrap();
+    mac.update(&payload);
+    payload.extend_from_slice(&mac.finalize().into_bytes());
+    Frame::new(1, 111, payload)
+}
+
+#[test]
+fn sealed_matches_wrap() {
+    let psk = Psk(seq(0x00));
+    let inner = Frame::new(1, 1, []);
+    assert_eq!(
+        sealed::<Pkcs7>(&psk, &seq(0x20), &inner.encode().unwrap()),
+        envelope::wrap(&psk, &seq(0x20), &inner).unwrap()
+    );
+}
+
+#[test]
+fn unwrap_refuses_bad_padding_under_a_valid_mac() {
+    let psk = Psk(seq(0x00));
+    let outer = sealed::<NoPadding>(&psk, &seq(0x20), &[0x11; 16]);
+    assert_eq!(
+        envelope::unwrap(&psk, &outer),
+        Err(EnvelopeError::BadPadding)
+    );
+}
+
+#[test]
+fn unwrap_refuses_a_bad_inner_crc_under_valid_mac_and_padding() {
+    let psk = Psk(seq(0x00));
+    let mut plain = Frame::new(1, 1, []).encode().unwrap();
+    plain[5] ^= 1;
+    let outer = sealed::<Pkcs7>(&psk, &seq(0x20), &plain);
+    assert!(
+        matches!(
+            envelope::unwrap(&psk, &outer),
+            Err(EnvelopeError::Inner(FrameError::BadCrc { .. }))
+        ),
+        "{:?}",
+        envelope::unwrap(&psk, &outer)
+    );
+}
+
+#[test]
+fn random_of_an_envelope() {
+    let psk = Psk([7; 32]);
+    let outer = envelope::wrap(&psk, &[9; 32], &Frame::new(1, 1, [])).unwrap();
+    assert_eq!(envelope::random(&outer), Some(&[9; 32]));
+    assert_eq!(envelope::random(&Frame::new(1, 1, vec![0; 100])), None);
+    assert_eq!(envelope::random(&Frame::new(1, 111, vec![])), None);
+    assert_eq!(envelope::random(&Frame::new(1, 111, vec![0; 32])), None);
+    assert_eq!(
+        envelope::random(&Frame::new(1, 111, seq::<33>(0))),
+        Some(&seq(1))
+    );
 }

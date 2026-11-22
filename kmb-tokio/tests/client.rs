@@ -2,7 +2,7 @@ use kmb::archive::uni::Layout;
 use kmb::archive::{Geometry, kind};
 use kmb::envelope::{self, Psk};
 use kmb::uni::{DataSet, Value};
-use kmb::{Frame, FrameDecoder, KmbTime};
+use kmb::{DecodeError, EnvelopeError, Frame, FrameDecoder, KmbTime};
 use kmb_tokio::{Client, Error};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -591,7 +591,16 @@ async fn replayed_ack_envelope_for_another_command_is_rejected() {
     c.identify().await.unwrap();
     c.adjust_clock().await.unwrap();
     let got = c.set(&kmb::uni::commit(1, c.pin(), &[2])).await;
-    assert!(got.is_err(), "{got:?}");
+    assert!(
+        matches!(
+            got,
+            Err(Error::Decode(DecodeError::Invalid {
+                structure: "envelope",
+                reason: "random repeats an earlier envelope",
+            }))
+        ),
+        "{got:?}"
+    );
 }
 
 #[tokio::test]
@@ -969,4 +978,334 @@ async fn short_multi_frame_reply_keeps_the_frames_received() {
         .map(|r| u32::from_be_bytes(r.payload[1..5].try_into().unwrap()))
         .collect();
     assert_eq!(starts, [0, 2]);
+}
+
+#[cfg(test)]
+fn repeats(got: &Result<Vec<u8>, Error>) -> bool {
+    matches!(
+        got,
+        Err(Error::Decode(DecodeError::Invalid {
+            structure: "envelope",
+            reason: "random repeats an earlier envelope",
+        }))
+    )
+}
+
+#[tokio::test]
+async fn reflected_request_envelope_is_rejected() {
+    let key = psk();
+    let mut counter = 0u8;
+    let (mut c, _) = client(move |req| {
+        if req.command != 111 {
+            return vec![Frame::decode(&hex(ENCRYPTION_REQUIRED)).unwrap()];
+        }
+        let inner = envelope::unwrap(&key, req).unwrap();
+        if inner.command == 17 {
+            return vec![req.clone()];
+        }
+        counter = counter.wrapping_add(1);
+        let reply = plain(&inner).remove(0);
+        vec![envelope::wrap(&key, &[counter; 32], &reply).unwrap()]
+    });
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    let got = c.get(&Frame::new(1, 17, [0, 1])).await;
+    assert!(repeats(&got), "{got:?}");
+}
+
+#[tokio::test]
+async fn cleartext_high_opcode_reply_in_an_encrypted_session_is_rejected() {
+    let (mut c, _) = client(encrypting(|inner, _| {
+        (inner.command == 146).then(|| Frame::new(1, 146, [1, 2, 3]))
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    assert!(c.is_encrypted());
+    let got = c.get(&kmb::command::mtu_probe(1, 10)).await;
+    assert!(
+        matches!(got, Err(Error::Envelope(EnvelopeError::NotEnvelope(146)))),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_envelope_version_is_refused() {
+    let (mut c, seen) = client(|_| {
+        vec![Frame::new(
+            1,
+            0x81,
+            hex("09 02 00 01 02 03 04 05 06 07 08 09 0A 0B"),
+        )]
+    });
+    keyed(&mut c);
+    let got = c.identify().await;
+    assert!(matches!(got, Err(Error::UnsupportedEnvelope(2))), "{got:?}");
+    assert!(!c.is_encrypted());
+    assert_eq!(seen.lock().unwrap().requests, [Frame::new(1, 1, [])]);
+}
+
+#[cfg(test)]
+async fn described() -> (
+    Client<DuplexStream>,
+    Arc<Mutex<Seen>>,
+    kmb::uni::Description,
+    u8,
+) {
+    let (mut c, seen) = client(plain);
+    c.identify().await.unwrap();
+    let mut d = c.read_description(DataSet::Config).await.unwrap();
+    let group = d.set_value("Install", "Unom", Value::F32(400.0)).unwrap();
+    c.set_credentials("admin", "1234");
+    c.set_refuse_cleartext_pin(true);
+    (c, seen, d, group)
+}
+
+#[tokio::test]
+async fn write_description_refuses_a_cleartext_pin() {
+    let (mut c, seen, d, group) = described().await;
+    let before = seen.lock().unwrap().requests.len();
+    let got = c.write_description(DataSet::Config, &d, &[group]).await;
+    assert!(matches!(got, Err(Error::Precondition(_))), "{got:?}");
+    assert_eq!(seen.lock().unwrap().requests.len(), before);
+}
+
+#[tokio::test]
+async fn write_group_refuses_a_cleartext_pin() {
+    let (mut c, seen, d, _) = described().await;
+    let before = seen.lock().unwrap().requests.len();
+    let got = c.write_group(DataSet::Config, &d, "Install").await;
+    assert!(matches!(got, Err(Error::Precondition(_))), "{got:?}");
+    assert_eq!(seen.lock().unwrap().requests.len(), before);
+}
+
+#[cfg(test)]
+fn over_limit(got: &Result<Vec<kmb_tokio::Record>, Error>) -> bool {
+    matches!(
+        got,
+        Err(Error::Decode(DecodeError::Invalid {
+            structure: "archive cursor",
+            reason: "more records than the client's limit",
+        }))
+    )
+}
+
+#[cfg(test)]
+fn record_requests(seen: &Arc<Mutex<Seen>>, before: usize) -> usize {
+    seen.lock().unwrap().requests[before..]
+        .iter()
+        .filter(|r| r.command == 22 && r.payload[5..7] != [0, 0])
+        .count()
+}
+
+#[tokio::test]
+async fn wrapped_ring_over_the_limit_is_refused_although_each_run_fits() {
+    let (mut c, seen) = client(|req| match req.command {
+        22 => {
+            let count = u16::from_be_bytes([req.payload[5], req.payload[6]]);
+            let mut p = hex("00 000000000000 0000000A FFFFFFFA");
+            for _ in 0..count {
+                p.extend(hex(RECORD));
+            }
+            vec![Frame::new(1, 22, p)]
+        }
+        _ => plain(req),
+    });
+    c.identify().await.unwrap();
+    let config = c.read_description(DataSet::Config).await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    c.set_max_records(5);
+    let before = seen.lock().unwrap().requests.len();
+    let got = c.download(&config, &layout).await;
+    assert!(over_limit(&got), "{got:?}");
+    assert_eq!(record_requests(&seen, before), 0);
+    c.set_max_records(9);
+    assert_eq!(c.download(&config, &layout).await.unwrap().len(), 9);
+}
+
+#[tokio::test]
+async fn read_records_over_the_limit_is_refused() {
+    let (mut c, seen) = client(plain);
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    c.set_max_records(4);
+    let geometry = Geometry {
+        per_frame: 1,
+        frames: 1,
+    };
+    let before = seen.lock().unwrap().requests.len();
+    let got = c.read_records(&layout, 0..5, geometry).await;
+    assert!(over_limit(&got), "{got:?}");
+    assert_eq!(record_requests(&seen, before), 0);
+    assert_eq!(
+        c.read_records(&layout, 0..4, geometry).await.unwrap().len(),
+        4
+    );
+}
+
+#[tokio::test]
+async fn set_with_a_high_opcode_takes_the_echo_as_an_ack() {
+    let (mut c, _) = client(|req| match req.command {
+        146 => vec![Frame::new(1, 146, [0])],
+        _ => vec![Frame::new(1, req.command | 0x80, [8])],
+    });
+    c.set(&Frame::new(1, 146, [1])).await.unwrap();
+}
+
+#[cfg(test)]
+async fn replay_after(between: usize) -> Result<Vec<u8>, Error> {
+    let key = psk();
+    let replay = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = replay.clone();
+    let mut fresh = 0u16;
+    let (mut c, _) = client(encrypting(move |inner, reply| {
+        if inner.command != 17 {
+            return None;
+        }
+        let random = if fresh == 0 || flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            [0xA5; 32]
+        } else {
+            let mut r = [0x5A; 32];
+            r[..2].copy_from_slice(&fresh.to_be_bytes());
+            r
+        };
+        fresh = fresh.wrapping_add(1);
+        Some(envelope::wrap(&key, &random, reply).unwrap())
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    let rtc = Frame::new(1, 17, []);
+    c.get(&rtc).await.unwrap();
+    for _ in 0..between {
+        c.get(&rtc).await.unwrap();
+    }
+    replay.store(true, std::sync::atomic::Ordering::SeqCst);
+    c.get(&rtc).await
+}
+
+#[tokio::test]
+async fn replay_window_counts_sent_and_accepted_envelopes() {
+    let half = kmb_tokio::REPLAY_WINDOW / 2;
+    let got = replay_after(half - 1).await;
+    assert!(repeats(&got), "{got:?}");
+    let got = replay_after(half).await;
+    assert_eq!(got.unwrap(), hex(RTC));
+}
+
+#[tokio::test]
+async fn recorded_ack_from_another_session_fails_the_command_check() {
+    let key = psk();
+    let recorded = Arc::new(Mutex::new(None::<Frame>));
+    let store = recorded.clone();
+    let (mut c, _) = client(encrypting(move |inner, reply| {
+        (inner.command == 18).then(|| {
+            let wire = envelope::wrap(&key, &[0xA5; 32], reply).unwrap();
+            *store.lock().unwrap() = Some(wire.clone());
+            wire
+        })
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    c.adjust_clock().await.unwrap();
+    let wire = recorded.lock().unwrap().clone().unwrap();
+    let (mut c, _) = client(encrypting(move |inner, _| {
+        (inner.command == 113).then(|| wire.clone())
+    }));
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    let got = c.set(&kmb::uni::commit(1, c.pin(), &[2])).await;
+    assert!(
+        matches!(
+            got,
+            Err(Error::Decode(DecodeError::Invalid {
+                structure: "reply",
+                reason: "command differs from the request",
+            }))
+        ),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn encrypted_requests_read_one_reply_frame() {
+    let key = psk();
+    let mut counter = 0u8;
+    let (mut c, seen) = client(move |req| {
+        if req.command != 111 {
+            return vec![Frame::decode(&hex(ENCRYPTION_REQUIRED)).unwrap()];
+        }
+        let inner = envelope::unwrap(&key, req).unwrap();
+        let reply = plain(&inner).remove(0);
+        let copies = if inner.command == 22 { 3 } else { 1 };
+        (0..copies)
+            .map(|_| {
+                counter = counter.wrapping_add(1);
+                envelope::wrap(&key, &[counter; 32], &reply).unwrap()
+            })
+            .collect()
+    });
+    keyed(&mut c);
+    c.identify().await.unwrap();
+    let desc = c.read_archive_description().await.unwrap();
+    let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+    let request = kmb::archive::request(1, kind::MAIN, 0, 1, 3);
+    assert_eq!(c.exchange(&request, 3).await.unwrap().len(), 1);
+    let geometry = Geometry {
+        per_frame: 1,
+        frames: 3,
+    };
+    let records = c.read_records(&layout, 0..3, geometry).await.unwrap();
+    assert_eq!(
+        records.iter().map(|r| r.slot).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    let frames: Vec<u8> = seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.command == 111)
+        .map(|r| envelope::unwrap(&psk(), r).unwrap())
+        .filter(|r| r.command == 22)
+        .map(|r| r.payload[7])
+        .collect();
+    assert_eq!(frames, [2, 0, 0, 0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_data_or_empty_archive_frame_ends_the_batch() {
+    for end in [b"Un".to_vec(), Vec::new()] {
+        let (mut c, seen) = client(move |req| match req.command {
+            22 if req.payload[1..5] == [0; 4] && req.payload[7] == 2 => {
+                let mut p = hex("00 000000000000 0000000A 00000003");
+                p.extend(hex(RECORD));
+                let data = Frame::new(1, 22, p);
+                vec![data.clone(), Frame::new(1, 22, end.clone()), data]
+            }
+            _ => plain(req),
+        });
+        c.set_byte_timeout(Duration::from_millis(50));
+        c.identify().await.unwrap();
+        let desc = c.read_archive_description().await.unwrap();
+        let layout = Layout::new(&desc, kind::MAIN, 1, 15000).unwrap();
+        let geometry = Geometry {
+            per_frame: 1,
+            frames: 3,
+        };
+        let records = c.read_records(&layout, 0..3, geometry).await.unwrap();
+        assert_eq!(
+            records.iter().map(|r| r.slot).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        let starts: Vec<u32> = seen
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .filter(|r| r.command == 22)
+            .map(|r| u32::from_be_bytes(r.payload[1..5].try_into().unwrap()))
+            .collect();
+        assert_eq!(starts, [0, 1, 2]);
+    }
 }

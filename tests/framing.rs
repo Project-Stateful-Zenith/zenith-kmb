@@ -231,3 +231,10 @@ fn reply_to_a_high_opcode_is_not_an_error() {
         }
     );
 }
+
+#[test]
+fn is_ack_needs_a_command_below_128() {
+    assert!(Frame::new(1, 18, [0]).is_ack());
+    assert!(!Frame::new(1, 146, [0]).is_ack());
+    assert!(!Frame::new(1, 18, [0, 0]).is_ack());
+}

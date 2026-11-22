@@ -252,8 +252,12 @@ byte as the request.
 | empty | empty payload | refused with `EmptyReply` |
 
 An **acknowledgement** of a set request is a normal reply whose payload is
-the single byte `00` (`Frame::is_ack`). `Client::set` accepts nothing else;
-any other payload is `Error::NotAcknowledged`. (tested)
+the single byte `00`. `Client::set` accepts a reply only when
+`reply_to(request)` reads it as data that is exactly `00`, so for the
+opcodes of 128 and above a reply echoing the opcode with `00` is an
+acknowledgement too; any other payload is `Error::NotAcknowledged`. (tested)
+`Frame::is_ack`, which has no request to go by, accepts only commands below
+128 with the payload `00`; the client does not use it. (tested)
 
 ### Errors
 
@@ -538,7 +542,7 @@ Once the envelope is active (tested):
   read as a device error, so the meter can refuse a request;
 - any other cleartext reply fails with `Error::Envelope(NotEnvelope)`;
 - each request reads exactly one reply frame, and archive reads ask for one
-  frame per request.
+  frame per request (tested).
 
 Without the envelope, a reply with command 111 fails with
 `Error::Envelope(NotEnvelope)`. (implemented)
@@ -607,8 +611,9 @@ allowed. (tested)
 
 ### What is checked
 
-For a pinned certificate: only the fingerprint. Validity dates, key usage and
-the chain are not checked. (tested)
+For a pinned certificate: only the fingerprint. The chain is not checked
+(tested). Validity dates and key usage are not checked either
+(implemented).
 
 For the root path, `rustls-webpki` verifies the chain from the end-entity
 certificate through the intermediates the meter sends to a trust anchor made
@@ -1266,7 +1271,8 @@ R is `record_len`. Per frame is capped at 65 535 and frames at 255.
 The frame count is forced to 1 when the client was made by `connect` or
 `connect_tls`, when `set_one_frame_archives(true)` was called, or while the
 envelope is active. Example: `record_len` 16 and the defaults give 446
-records per frame (tested). The one-frame cases are implemented, not
+records per frame (tested). The envelope case is tested; the `connect`,
+`connect_tls` and `set_one_frame_archives(true)` cases are implemented, not
 tested. The margin of 50 bytes is crate policy.
 
 `Geometry::iter_batches` walks a range (tested): a full batch is
