@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-22
+
 ### Fixed
 
 - kmb-tokio: a meter that cannot open an envelope answers in cleartext with
@@ -156,7 +158,8 @@ First public release.
 - Feature `tls`: KMB over TLS, trusting a given root CA key, certificate
   pins, or both. No root key is built in.
 
-[Unreleased]: https://github.com/Project-Stateful-Zenith/zenith-kmb/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Project-Stateful-Zenith/zenith-kmb/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.2.0
 [1.1.4]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.4
 [1.1.3]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.3
