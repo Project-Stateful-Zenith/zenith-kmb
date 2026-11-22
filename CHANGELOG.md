@@ -6,17 +6,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Documentation
-
-- docs/protocol.md records the envelope as one real meter showed it: PKCS#7
-  padding and the MAC input match the crate, a refused envelope comes back
-  in cleartext as command 239 with code 10, and `ENC_psk` reads as zeros
-  while a written zero key leaves the stored key in place.
-- docs/protocol.md no longer marks as tested what no test pins: validity
-  dates and key usage of a pinned certificate are now "implemented", and the
-  envelope one-frame rule reads the same in both places. README says the
-  tests use constructed frames, not recorded ones.
-
 ### Fixed
 
 - kmb-tokio: a meter that cannot open an envelope answers in cleartext with
@@ -34,14 +23,28 @@ and the project uses [Semantic Versioning](https://semver.org/).
   multi-frame reply it waits for the line to go quiet before the next
   request, and the description page retry does the same.
 - kmb-tokio: `Client::exchange` no longer panics on a huge reply count.
+- kmb: `encode_kmb_string` writes CP1252, the encoding `kmb_string` reads,
+  so a non-ASCII name such as "Café" round-trips. Characters CP1252 cannot
+  hold become `?`, as in the other CP1252 encoders; text is cut at n − 1
+  bytes and NUL-filled.
 
 ### Documentation
 
+- docs/protocol.md records the envelope as one real meter showed it: PKCS#7
+  padding and the MAC input match the crate, a refused envelope comes back
+  in cleartext as command 239 with code 10, and `ENC_psk` reads as zeros
+  while a written zero key leaves the stored key in place.
+- docs/protocol.md no longer marks as tested what no test pins: validity
+  dates and key usage of a pinned certificate are now "implemented", and the
+  envelope one-frame rule reads the same in both places. README says the
+  tests use constructed frames, not recorded ones.
 - docs/protocol.md records what one real meter showed: the slot at
   `max_rec + cur_rec` of a wrapped ring is the erased next write position,
   so skipping it loses nothing; meter time is UTC; the 8-byte archive
   request is answered; a group write and commit change only that field and
   the change counter. A new evidence level, observed, marks these.
+- README: the probe example no longer puts the password on the command
+  line; it reads it with `read -rs` or takes `--password-file`.
 
 ## [1.2.0] - 2026-11-22
 
@@ -153,6 +156,7 @@ First public release.
 - Feature `tls`: KMB over TLS, trusting a given root CA key, certificate
   pins, or both. No root key is built in.
 
+[Unreleased]: https://github.com/Project-Stateful-Zenith/zenith-kmb/compare/v1.2.0...HEAD
 [1.2.0]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.2.0
 [1.1.4]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.4
 [1.1.3]: https://github.com/Project-Stateful-Zenith/zenith-kmb/releases/tag/v1.1.3

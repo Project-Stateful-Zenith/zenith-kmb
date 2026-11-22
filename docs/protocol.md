@@ -148,7 +148,13 @@ of the same number. When encoding, a character outside the code page becomes
 `?`. (implemented)
 
 `decode::kmb_string` and `decode::encode_kmb_string` are helpers for the fixed
-identify fields; `encode_kmb_string` always leaves at least one NUL. (tested)
+identify fields. `kmb_string` decodes CP1252 up to the first NUL.
+`encode_kmb_string(text, n)` encodes CP1252 with the same table, so a
+character outside the code page becomes `?` (one byte each, like every other
+CP1252 writer here), cuts the result to `n - 1` bytes and NUL-pads it to
+exactly `n` bytes, so at least one NUL is always written (`n = 0` gives no
+bytes). Text made of CP1252 characters and at most `n - 1` bytes long round
+trips through the two. (tested)
 
 ### Floats
 

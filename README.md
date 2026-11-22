@@ -127,12 +127,17 @@ examples. They only read from the meter unless an option says otherwise.
 ```sh
 # Identify a meter, read its clock, configuration and the newest records of every archive
 cargo run --example probe -- 192.0.2.10:2101 --records 3
-KMB_PASSWORD=1234 cargo run --example probe -- 192.0.2.10:2101 --user admin
+read -rs KMB_PASSWORD && export KMB_PASSWORD
+cargo run --example probe -- 192.0.2.10:2101 --user admin
+cargo run --example probe -- 192.0.2.10:2101 --user admin --password-file meter.pw
 cargo run --example probe -- 192.0.2.10:2101 --psk-file meter.psk
 cargo run --features tls --example probe -- 192.0.2.10:7101 --tls-root 04HEX...
 
-# Secrets come from KMB_PASSWORD / KMB_PSK or from --password-file / --psk-file,
-# never from the command line, where other users and the shell history see them.
+# Secrets come from KMB_PASSWORD / KMB_PSK or from --password-file / --psk-file;
+# --password and --psk are refused. Do not type the secret into the command
+# itself (not even as KMB_PASSWORD=... cargo run), where the shell history
+# keeps it: read it with `read -rs` as above, or keep it in a file only you
+# can read (chmod 600).
 
 # Clock offset between meter and PC; --adjust sets the meter clock
 cargo run --example clock -- 192.0.2.10:2101
