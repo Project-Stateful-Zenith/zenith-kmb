@@ -6,6 +6,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documentation
+
+- docs/protocol.md records the envelope as one real meter showed it: PKCS#7
+  padding and the MAC input match the crate, a refused envelope comes back
+  in cleartext as command 239 with code 10, and `ENC_psk` reads as zeros
+  while a written zero key leaves the stored key in place.
+
 ### Fixed
 
 - kmb-tokio: a meter that cannot open an envelope answers in cleartext with
